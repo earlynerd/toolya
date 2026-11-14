@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **CLI + Web:** `input` — evdev key injection (BACK/OK/joystick) for manual control and UI autotests; key map in core, shared via the wasm contract
 - **Web:** 60 fps MJPEG live screen streaming (requires natartos display hook)
 - **Web:** natartos mod framework installer with version management and rollback
 - **Web:** shared Rust/WASM core — device contract, enable plan, constants from one source

@@ -219,7 +219,8 @@ pub fn device_contract() -> String {
             "\"files\":{{\"background\":\"{}\",\"usage\":\"{}\",\"screencap\":\"{}\",\"fb_shared\":\"{}\"}},",
             "\"screen\":{{\"width\":{},\"height\":{},\"grab_trigger\":\"{}\",\"stream_port\":{}}},",
             "\"natartos\":{{\"schema\":{},\"repo\":\"{}\",\"stock_dir\":\"{}\",\"manifest_device\":\"{}\",",
-            "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}}",
+            "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}},",
+            "\"input\":{}",
             "}}"
         ),
         usb::ADB, usb::RNDIS,
@@ -229,6 +230,7 @@ pub fn device_contract() -> String {
         screen::WIDTH, screen::HEIGHT, screen::GRAB_TRIGGER, screen::STREAM_PORT,
         natartos::MANIFEST_SCHEMA, natartos::REPO, natartos::STOCK_DIR, natartos::MANIFEST_DEVICE,
         natartos::BOOTCOUNT, natartos::STATUS, natartos::DISABLED, natartos::LOG,
+        crate::input::map_json(),
     )
 }
 
@@ -243,7 +245,8 @@ pub fn device_contract_json() -> String {
             "\"files\":{{\"background\":\"{}\",\"usage\":\"{}\",\"screencap\":\"{}\",\"fb_shared\":\"{}\"}},",
             "\"screen\":{{\"width\":{},\"height\":{},\"grab_trigger\":\"{}\",\"stream_port\":{}}},",
             "\"natartos\":{{\"schema\":{},\"repo\":\"{}\",\"stock_dir\":\"{}\",\"manifest_device\":\"{}\",",
-            "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}}",
+            "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}},",
+            "\"input\":{}",
             "}}"
         ),
         usb::ADB, usb::RNDIS,
@@ -253,6 +256,7 @@ pub fn device_contract_json() -> String {
         screen::WIDTH, screen::HEIGHT, screen::GRAB_TRIGGER, screen::STREAM_PORT,
         natartos::MANIFEST_SCHEMA, natartos::REPO, natartos::STOCK_DIR, natartos::MANIFEST_DEVICE,
         natartos::BOOTCOUNT, natartos::STATUS, natartos::DISABLED, natartos::LOG,
+        crate::input::map_json(),
     )
 }
 
@@ -296,3 +300,4 @@ mod tests {
 }
 
 pub mod contract;
+pub mod input;

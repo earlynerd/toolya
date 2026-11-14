@@ -24,6 +24,8 @@ screen, the usage counters, and a handful of desk-development tweaks.
 - **Mirror the screen** — 60 fps MJPEG streaming when the natartos display hook is active, with raw framebuffer grab as fallback.
 - **Install and manage natartos** — the on-device mod framework, one-click from the web UI with version management and rollback.
 - **Play Doom.** *itrunsdoom, finally.*
+- **Drive the UI** — send BACK / OK / joystick keys as evdev events, from the web D-pad or
+  `toolya input`, for manual control and scripted UI tests. See [docs/input.md](docs/input.md).
 - Read the **usage counters** — goggle power-ons and motor starts.
 - **Change the desk background** — drop in any photo, toolya converts it to the exact format.
 - Switch **USB mode** adb ↔ rndis; and (WIP) silence the fan, mute the boot sound,

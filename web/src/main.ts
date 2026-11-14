@@ -8,6 +8,7 @@ import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSeli
 import { toScreenBmp, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
+import { sendKey, holdKey } from "./input";
 import type { Adb } from "@yume-chan/adb";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -288,6 +289,7 @@ $("btn-connect").addEventListener("click", async () => {
     btn("nat-refresh", false);
     ($("nat-safe") as HTMLInputElement).disabled = false;
     updateNatInstall();
+    setDpad(true);
     btn("scr-grab", false);
     btn("ps-stream", false);
     if (bgBytes) btn("bg-apply", false);
@@ -335,6 +337,7 @@ function fakeConnect() {
   btn("nat-refresh", false);
   ($("nat-safe") as HTMLInputElement).disabled = false;
   updateNatInstall();
+  setDpad(true);
   btn("scr-grab", false);
   if (bgBytes) btn("bg-apply", false);
   $("selinux-state").textContent = "Enforcing";
@@ -411,6 +414,29 @@ async function toggleSelinux(mode: "permissive" | "enforcing") {
 }
 $("selinux-perm").addEventListener("click", () => void toggleSelinux("permissive"));
 $("selinux-enf").addEventListener("click", () => void toggleSelinux("enforcing"));
+
+// --- input (evdev D-pad) ---
+const DPAD_IDS = ["inp-up", "inp-down", "inp-left", "inp-right", "inp-ok", "inp-back", "inp-back-long"];
+function setDpad(enabled: boolean) {
+  for (const id of DPAD_IDS) btn(id, !enabled);
+}
+async function tapKey(name: string) {
+  if (!adb) return;
+  try { await sendKey(adb, name); log(`input: ${name}`); }
+  catch (e) { reportAdbError("input", e); }
+}
+async function longKey(name: string, ms: number) {
+  if (!adb) return;
+  try { log(`input: ${name} (hold ${ms}ms)…`); await holdKey(adb, name, ms); log(`input: ${name} released`); }
+  catch (e) { reportAdbError("input", e); }
+}
+$("inp-up").addEventListener("click", () => void tapKey("UP"));
+$("inp-down").addEventListener("click", () => void tapKey("DOWN"));
+$("inp-left").addEventListener("click", () => void tapKey("LEFT"));
+$("inp-right").addEventListener("click", () => void tapKey("RIGHT"));
+$("inp-ok").addEventListener("click", () => void tapKey("OK"));
+$("inp-back").addEventListener("click", () => void tapKey("BACK"));
+$("inp-back-long").addEventListener("click", () => void longKey("BACK", 1500));
 
 // --- natartos section ---
 async function refreshNatartos() {
@@ -820,6 +846,7 @@ async function disconnect() {
   btn("usb-adb", true);
   btn("usb-rndis", true);
   stopStream();
+  setDpad(false);
   btn("scr-grab", true);
   btn("ps-stream", true);
   btn("bg-apply", true);

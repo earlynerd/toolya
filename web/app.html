@@ -237,6 +237,11 @@ footer b{color:var(--fg);font-weight:600}
 @media (max-width:420px){
   .bar .btn{flex:1 1 auto}
 }
+.dpad{display:grid;gap:6px;width:max-content;
+  grid-template-columns:repeat(3,52px);
+  grid-template-areas:". up ." "left ok right" ". down ." "back back backl"}
+.dpad .btn{width:100%;justify-content:center;padding:0}
+.dpad #inp-back,.dpad #inp-back-long{width:auto}
 </style>
 </head>
 <body>
@@ -311,6 +316,23 @@ footer b{color:var(--fg);font-weight:600}
           </div>
           <span class="muted push" style="font-size:13px">switching re-enumerates USB and drops the connection</span>
         </div>
+      </section>
+
+      <section class="card">
+        <div class="statusrow" style="gap:12px 18px;margin-bottom:10px">
+          <b style="font-size:14px">Input</b>
+          <span class="muted push" style="font-size:13px">evdev keys over adb-root — manual control &amp; UI autotests</span>
+        </div>
+        <div class="dpad" id="dpad">
+          <button class="btn sm" id="inp-up" type="button" disabled style="grid-area:up">↑</button>
+          <button class="btn sm" id="inp-left" type="button" disabled style="grid-area:left">←</button>
+          <button class="btn sm tonal" id="inp-ok" type="button" disabled style="grid-area:ok">OK</button>
+          <button class="btn sm" id="inp-right" type="button" disabled style="grid-area:right">→</button>
+          <button class="btn sm" id="inp-down" type="button" disabled style="grid-area:down">↓</button>
+          <button class="btn sm" id="inp-back" type="button" disabled style="grid-area:back">BACK</button>
+          <button class="btn sm" id="inp-back-long" type="button" disabled style="grid-area:backl">BACK long</button>
+        </div>
+        <p class="hint" style="margin:8px 0 0">BACK/OK are confirmed; joystick arrows are unconfirmed (codes need <code>getevent</code> on hardware). CLI: <code>toolya input key OK</code> · scripting: <code>sendKey</code>/<code>holdKey</code> in <code>src/input.ts</code>.</p>
       </section>
 
       <a class="card natlink" id="to-natartos" href="/natartos">
