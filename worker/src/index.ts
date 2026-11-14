@@ -215,6 +215,13 @@ export default {
       return serveAsset(await env.ASSETS.fetch(new Request(u, req)), env);
     }
 
+    // no-root camera viewer (standalone page)
+    if (["/unrooted", "/unrooted/"].includes(url.pathname)) {
+      const u = new URL(req.url);
+      u.pathname = "/unrooted.html";
+      return serveAsset(await env.ASSETS.fetch(new Request(u, req)), env);
+    }
+
     // everything else: landing + static assets (unknown paths fall back to index.html)
     return serveAsset(await env.ASSETS.fetch(req), env);
   },

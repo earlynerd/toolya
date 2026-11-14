@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow">
+<title>toolya — watch without root</title>
+<meta name="description" content="View your DJI Goggles 3 feed on a PC with no root — how it works and a browser camera viewer.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f1115'/%3E%3Crect x='7' y='10' width='13' height='12' rx='2.5' fill='%235cc8ff'/%3E%3Cpath d='M22 13l4-2v10l-4-2z' fill='%235cc8ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a1f; --panel2:#1e222a; --line:#2a2f38;
+  --fg:#e7e9ee; --muted:#8b94a3; --accent:#5cc8ff; --ok:#5ad17a; --err:#ff6b6b;
+  --radius:14px;
+  --sans:"Geist",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Geist Mono",ui-monospace,Menlo,monospace;
+}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:
+  radial-gradient(1200px 600px at 50% -10%,color-mix(in srgb,var(--accent) 10%,transparent),transparent 60%) var(--bg);
+  color:var(--fg);font:15px/1.6 var(--sans);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.page{max-width:900px;margin:0 auto;padding:22px 24px 80px}
+.top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+.wordmark{margin:0;font-size:20px;font-weight:800;letter-spacing:-.03em;color:var(--accent)}
+.sub{font-size:13px;color:var(--muted)}
+.top .right{margin-left:auto;font-size:13px}
+h1{margin:34px 0 6px;font-size:clamp(26px,5vw,38px);line-height:1.08;font-weight:700;letter-spacing:-.03em}
+.lede{margin:0 0 8px;max-width:60ch;color:var(--muted);font-size:16px}
+.card{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:22px;margin-top:20px}
+.card h2{margin:0 0 12px;font-size:16px;font-weight:600;letter-spacing:-.01em}
+.badge{display:inline-block;font:500 11px/1 var(--mono);padding:4px 8px;border-radius:999px;margin-left:8px;
+  border:1px solid color-mix(in srgb,var(--err) 42%,transparent);background:color-mix(in srgb,var(--err) 10%,transparent);color:var(--err);vertical-align:middle}
+.controls{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+select,button{font:500 14px var(--sans);border-radius:10px;border:1px solid var(--line);
+  background:var(--panel2);color:var(--fg);height:42px;padding:0 14px}
+select{min-width:220px}
+button{cursor:pointer;transition:background .12s,transform .12s}
+button:hover:not(:disabled){transform:translateY(-1px)}
+button.primary{background:var(--accent);color:#08131c;border-color:transparent;font-weight:600}
+button.primary:hover:not(:disabled){background:#82d6ff}
+button:disabled{opacity:.5;cursor:not-allowed}
+#status{margin:14px 0 0;font:13px var(--mono);color:var(--muted);min-height:1.4em}
+#status[data-kind="ok"]{color:var(--ok)} #status[data-kind="err"]{color:var(--err)}
+.stage{margin-top:16px;border:1px solid var(--line);border-radius:12px;background:#000;overflow:hidden;aspect-ratio:16/9;display:flex}
+video{width:100%;height:100%;object-fit:contain;background:#000}
+ol,ul{margin:8px 0 0;padding-left:20px} li{margin:4px 0}
+code{font:500 13px var(--mono);background:var(--panel2);padding:1px 6px;border-radius:6px;border:1px solid var(--line)}
+.muted{color:var(--muted)}
+table{border-collapse:collapse;width:100%;margin-top:6px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;width:40%}
+details{margin-top:8px} summary{cursor:pointer;color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <h2 class="wordmark">toolya</h2>
+    <span class="sub">watch without root</span>
+    <span class="right"><a href="/">← root tools</a></span>
+  </div>
+
+  <h1>See the goggles on your PC — no root<span class="badge">experimental</span></h1>
+  <p class="lede">The rooted screen-mirror needs natartos + ADB. This page is the no-root path: show
+    the Goggles 3 live feed as an ordinary camera. It works once the feed reaches your OS as a
+    camera device — it does not talk to the goggles itself. Why, and how to get there, below.</p>
+
+  <div class="card">
+    <h2>Camera viewer</h2>
+    <div class="controls">
+      <select id="device" aria-label="camera"></select>
+      <button id="start" class="primary">Start</button>
+      <button id="fullscreen" disabled>Fullscreen</button>
+    </div>
+    <p id="status"></p>
+    <div class="stage"><video id="preview" playsinline muted></video></div>
+    <p class="muted" style="margin-top:12px;font-size:13px">
+      Pick <b>OBS Virtual Camera</b> (or your bridge app's virtual cam) once the goggles feed is
+      flowing into it. A plain webcam shows here too — handy to confirm the viewer works.</p>
+  </div>
+
+  <div class="card">
+    <h2>How Goggles 3 give video to a PC without root</h2>
+    <p class="muted">Short version: <b>not as a webcam.</b> With wired sharing on, the goggles
+      enumerate as a <b>USB network adapter</b> and serve the same UDP video session DJI Fly uses
+      over Wi-Fi. A browser can't open that (no raw UDP, no USB-net), so a small native bridge on
+      the host reads it — then re-exposes it as a virtual camera this page can show.</p>
+    <table>
+      <tr><th>USB identity</th><td><code>2ca3:0020</code> — RNDIS-style network adapter, <b>not</b> UVC. So <code>getUserMedia</code> never sees the goggles directly.</td></tr>
+      <tr><th>Host link</th><td>Host gets <code>192.168.60.1/24</code>; goggles serve H.264 at <code>192.168.60.2:9003</code> (same session as DJI Fly). Needs a keep-alive; stream has no IDR, SPS/PPS repeat.</td></tr>
+      <tr><th>On the goggles</th><td>Settings → About → <b>OTG Wired Connection to Computer</b> on; then <b>Share Liveview</b> on (5D button). A live aircraft feed (or Camera View Recording) must be on screen.</td></tr>
+      <tr><th>Host privilege</th><td>Configuring the USB-net adapter needs admin/sudo once; Windows also needs a one-time Zadig → WinUSB on interface <code>MI 00</code>. This is host admin, <b>not</b> goggles root.</td></tr>
+    </table>
+    <details>
+      <summary>What this means for the browser</summary>
+      <ul>
+        <li><b>UVC hypothesis — false.</b> No webcam descriptor is exposed, so a pure-browser viewer can't capture the goggles over USB.</li>
+        <li><b>USB-net / UDP — out of browser reach.</b> No raw sockets, no USB network class via WebUSB.</li>
+        <li><b>Reachable:</b> any OS camera, including a virtual camera a bridge fills. That's what the viewer above uses — honest and root-free.</li>
+      </ul>
+    </details>
+  </div>
+
+  <div class="card">
+    <h2>Get the feed into a virtual camera (no root)</h2>
+    <ol>
+      <li>On the goggles: enable <b>OTG Wired Connection</b> and <b>Share Liveview</b>, with a camera feed on screen.</li>
+      <li>Connect USB-C to the PC. Run a native USB-net bridge for Goggles 3 (community apps exist for macOS/Windows; Linux via a USB-net profile).</li>
+      <li>Send the bridge's output to <b>OBS</b> → Start <b>Virtual Camera</b> (or use a bridge that offers a virtual cam itself).</li>
+      <li>Back here: press Start, pick the virtual camera, Fullscreen.</li>
+    </ol>
+    <p class="muted" style="font-size:13px;margin-top:10px">A browser-native bridge (USB-net + UDP
+      read in a tiny local helper, re-served over WebSocket + WebCodecs) is the path to drop OBS —
+      tracked as follow-up. See <code>docs/unrooted-video.md</code>.</p>
+  </div>
+</div>
+<script type="module" src="/src/unrooted.ts"></script>
+</body>
+</html>
