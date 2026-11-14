@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discord
+    url: https://discord.gg/dDPb7CnmBb
+    about: Chat, questions, ideas, show what you built.
+  - name: Questions & ideas
+    url: https://github.com/grom-labs/toolya/discussions
+    about: For usage questions and open-ended discussion (not bugs).

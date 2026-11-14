@@ -1,0 +1,23 @@
+[package]
+name = "toolya"
+version = "0.0.1"
+edition = "2021"
+description = "CLI root tool for DJI Goggles 3"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "toolya"
+path = "src/main.rs"
+
+[dependencies]
+toolya-core = { path = "../core" }
+nusb = "0.1"
+pollster = "0.3"
+adb_client = { version = "3.2", features = ["usb"] }
+ureq = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
