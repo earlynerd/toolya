@@ -112,13 +112,14 @@ details{margin-top:8px} summary{cursor:pointer;color:var(--accent)}
     <h2>Get the feed into a virtual camera (no root)</h2>
     <ol>
       <li>On the goggles: enable <b>OTG Wired Connection</b> and <b>Share Liveview</b>, with a camera feed on screen.</li>
-      <li>Connect USB-C to the PC. Run a native USB-net bridge for Goggles 3 (community apps exist for macOS/Windows; Linux via a USB-net profile).</li>
-      <li>Send the bridge's output to <b>OBS</b> → Start <b>Virtual Camera</b> (or use a bridge that offers a virtual cam itself).</li>
+      <li>Connect USB-C to the PC and run a native USB viewer — <b>CosmoViewer Direct</b> (macOS) or a
+        community app (planktonwhc / Bruhkay; Windows needs a one-time Zadig → WinUSB on <code>MI 00</code>).</li>
+      <li>Enable that app's <b>virtual camera</b> (CosmoViewer has one built in; otherwise route it through <b>OBS</b> → Virtual Camera).</li>
       <li>Back here: press Start, pick the virtual camera, Fullscreen.</li>
     </ol>
-    <p class="muted" style="font-size:13px;margin-top:10px">A browser-native bridge (USB-net + UDP
-      read in a tiny local helper, re-served over WebSocket + WebCodecs) is the path to drop OBS —
-      tracked as follow-up. See <code>docs/unrooted-video.md</code>.</p>
+    <p class="muted" style="font-size:13px;margin-top:10px">Why a native app and not pure browser:
+      the goggles speak USB-network (RNDIS), which WebUSB can't claim and the browser can't socket
+      into — so a native helper reads the feed, the page shows it. See <code>docs/unrooted-video.md</code>.</p>
   </div>
 </div>
 <script type="module" src="/src/unrooted.ts"></script>
