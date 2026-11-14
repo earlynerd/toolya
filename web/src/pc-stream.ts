@@ -8,13 +8,14 @@
 
 import type { Adb } from "@yume-chan/adb";
 import { run } from "./adb";
+import { getContract } from "./wasm";
 
 const FB_RECEIVER_VENDOR = "/vendor/natartos/apps/stream/fb_receiver";
 const FB_RECEIVER_TMP = "/data/local/tmp/fb_receiver";
 const FB_PIPE_PATH = "/data/local/tmp/fb_pipe";
 
 export interface PcStreamHandle {
-  stop(): void;
+  stop(): Promise<void>;
   readonly active: boolean;
   readonly fps: number;
 }
@@ -45,6 +46,9 @@ async function findReceiver(adb: Adb): Promise<string> {
 
 export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle> {
   const { adb } = opts;
+  // fb_stop / fb_override live next to fb_shared (contract); overlay watches them.
+  const c = await getContract();
+  const fbStop = c.files.fb_shared.replace(/\/[^/]*$/, "/fb_stop");
   let running = true;
   let fps = 0;
 
@@ -73,6 +77,10 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   }
 
   const receiverPath = await findReceiver(adb);
+
+  // Clear a stop flag left over from a previous run, else the overlay inject
+  // thread would see fb_stop and tear down immediately on this start.
+  await run(adb, `rm -f ${fbStop}`).catch(() => { /* ignore */ });
 
   // Capture screen
   let mediaStream: MediaStream;
@@ -162,13 +170,16 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
 
   animFrame = requestAnimationFrame(loop);
 
-  function stop(reason = "stopped") {
+  async function stop(reason = "stopped") {
     if (!running) return;
     running = false;
     if (animFrame) cancelAnimationFrame(animFrame);
-    mediaStream.getTracks().forEach(t => t.stop());
+    // Signal the overlay to stop injecting (<100ms) and kill fb_receiver.
+    // Must run while adb is still alive — disconnect() stops us before closing.
+    try { await run(adb, `touch ${fbStop}`); } catch { /* ignore */ }
     try { writer.close(); } catch { /* ignore */ }
     try { proc.kill(); } catch { /* ignore */ }
+    mediaStream.getTracks().forEach(t => t.stop());
     opts.onStop?.(reason);
   }
 

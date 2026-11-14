@@ -794,6 +794,8 @@ function stopHeartbeat() {
 
 async function disconnect() {
   stopHeartbeat();
+  // Stop PC Stream before closing adb — it must touch fb_stop over the live link.
+  if (pcStream?.active) { try { await pcStream.stop(); } catch { /* ignore */ } }
   try { term?.dispose(); } catch { /* ignore */ }
   term = null;
   $("term").innerHTML = "";
@@ -812,7 +814,6 @@ async function disconnect() {
   btn("usb-adb", true);
   btn("usb-rndis", true);
   stopStream();
-  if (pcStream?.active) pcStream.stop();
   btn("scr-grab", true);
   btn("ps-stream", true);
   btn("bg-apply", true);
