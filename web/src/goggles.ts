@@ -23,14 +23,18 @@ export function isKnownDevice(d: DeviceInfo): boolean {
   return KNOWN_G3_PIDS.has(d.productId) || G3_NAME_PATTERN.test(d.productName);
 }
 
+interface DumlPort {
+  iface: number;
+  ep_out: number;
+  ep_in: number;
+}
+
 interface EnablePlan {
   handshake: Uint8Array<ArrayBuffer>[];
   init_count: number;
   candidates: Uint8Array<ArrayBuffer>[];
   expect: string;
-  iface: number;
-  ep_out: number;
-  ep_in: number;
+  ports: DumlPort[];
 }
 
 function hexToBytes(hex: string): Uint8Array<ArrayBuffer> {
@@ -50,18 +54,14 @@ async function getEnablePlan(): Promise<EnablePlan> {
     init_count: number;
     candidates: string[];
     expect: string;
-    iface: number;
-    ep_out: number;
-    ep_in: number;
+    ports: { iface: number; ep_out: number; ep_in: number }[];
   };
   return {
     handshake: p.handshake.map(hexToBytes),
     init_count: p.init_count,
     candidates: p.candidates.map(hexToBytes),
     expect: p.expect,
-    iface: p.iface,
-    ep_out: p.ep_out,
-    ep_in: p.ep_in,
+    ports: p.ports,
   };
 }
 
@@ -82,18 +82,28 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
   log(`opening ${device.productName ?? "goggles"}…`);
   await device.open();
   if (device.configuration === null) await device.selectConfiguration(1);
-  await device.claimInterface(plan.iface);
+
+  let port: DumlPort | undefined;
+  for (const p of plan.ports) {
+    try {
+      await device.claimInterface(p.iface);
+      port = p;
+      break;
+    } catch {
+      continue;
+    }
+  }
+  if (!port) throw new Error("no DUML interface found — firmware USB layout unknown");
 
   const dec = new TextDecoder();
   let blob = "";
   let gotExpect = false;
 
-  // concurrent reader: accumulate IN data, watch for `</dji>`
   let reading = true;
   const reader = (async () => {
     while (reading) {
       try {
-        const r = await device.transferIn(plan.ep_in, 1024);
+        const r = await device.transferIn(port!.ep_in, 1024);
         if (r.data && r.data.byteLength) {
           blob += dec.decode(new Uint8Array(r.data.buffer), { stream: true });
           if (blob.includes(plan.expect)) {
@@ -108,11 +118,10 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
   })();
 
   log("handshake…");
-  // init packets, then probe packets until `</dji>`
   for (let i = 0; i < plan.handshake.length; i++) {
     if (gotExpect) break;
     try {
-      await device.transferOut(plan.ep_out, plan.handshake[i]);
+      await device.transferOut(port.ep_out, plan.handshake[i]);
     } catch {
       break;
     }
@@ -137,7 +146,7 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
     for (const cand of plan.candidates) {
       if (disconnected) break;
       try {
-        await device.transferOut(plan.ep_out, cand);
+        await device.transferOut(port.ep_out, cand);
       } catch {
         disconnected = true; // write failed = device gone = success
         break;

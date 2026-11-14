@@ -49,6 +49,17 @@ For screen streaming, the [natartos](https://github.com/grom-labs/natartos) disp
 writes the live framebuffer to a shared file; `fb_stream` (a small aarch64 binary pushed
 over ADB) JPEG-encodes it at up to 60 fps and streams frames back over the ADB pipe.
 
+## Tested firmware
+
+| Firmware | ADB root | Notes |
+|----------|----------|-------|
+| v01.00.0900 | ✅ | earliest known working version |
+| v01.00.1500 | ✅ | |
+| v01.00.1600 | ✅ | latest as of 2026-11 |
+
+ADB does not survive a reboot — run the enable step again after each power cycle.
+Mods installed via [natartos](https://github.com/grom-labs/natartos) persist on `/vendor` across reboots.
+
 ## Build
 
 Toolchains aren't installed on the build host — everything runs in the `toolya-build`

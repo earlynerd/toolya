@@ -131,6 +131,7 @@ export interface NatartosStatus {
   version: string;
   bootcount: string;
   disabled: boolean;
+  mods: string[];
 }
 export async function natartosStatus(adb: Adb): Promise<NatartosStatus> {
   const n = (await getContract()).natartos;
@@ -147,8 +148,54 @@ export async function natartosStatus(adb: Adb): Promise<NatartosStatus> {
     )
   ).trim();
   const disabled = (await run(adb, `[ -f ${n.disabled} ] && echo 1 || echo 0`)).trim() === "1";
-  return { installed: version !== "", version, bootcount, disabled };
+  const installedJson = (await run(adb, `cat /vendor/natartos/installed.json 2>/dev/null`)).trim();
+  let mods: string[] = [];
+  if (installedJson) {
+    try {
+      const j = JSON.parse(installedJson) as { mods?: string[]; custom?: string[] };
+      mods = [...(j.mods ?? []), ...(j.custom ?? [])];
+    } catch { /* malformed → empty */ }
+  }
+  return { installed: version !== "", version, bootcount, disabled, mods };
 }
+/** Diagnostic dump for bug reports — mirrors `toolya natartos dump`. */
+export async function natartosDump(adb: Adb): Promise<string> {
+  const n = (await getContract()).natartos;
+  const q = async (cmd: string) => {
+    try { return (await run(adb, cmd)).trim(); }
+    catch { return "(error)"; }
+  };
+  const entries: [string, string][] = [
+    ["model",     await q("getprop ro.product.model")],
+    ["device",    await q("getprop ro.product.device")],
+    ["build",     await q("getprop ro.build.display.id")],
+    ["kernel",    await q("uname -r")],
+    ["id",        await q("id")],
+    ["selinux",   await q("getenforce 2>&1")],
+    ["usb",       await q("getprop sys.usb.config")],
+    ["busybox",   await q("busybox 2>&1 | head -1")],
+    ["df",        await q("df /vendor /data 2>&1")],
+    ["version",   await q(`grep -o '"natartos_version"[^,}]*' ${n.manifest_device} 2>/dev/null | cut -d'"' -f4 || echo '(not installed)'`)],
+    ["bootcount", await q(`if [ -f ${n.bootcount} ]; then od -A n -t u4 -N 4 ${n.bootcount} | tr -d ' '; else echo 0; fi`)],
+    ["disabled",  await q(`[ -f ${n.disabled} ] && echo yes || echo no`)],
+    ["mods",      await q("ls -la /vendor/natartos/mods/ 2>/dev/null || echo '(none)'")],
+    ["loaded",    await q("cat /proc/$(pidof dji_glasses)/maps 2>/dev/null | grep natartos || echo '(none)'")],
+    ["inject",    await q("cat /data/local/tmp/natartos_inject.pid 2>/dev/null && echo '' || echo '(no pid)'")],
+    ["log",       await q("tail -30 /data/local/tmp/natartos_inject.log 2>/dev/null || echo '(no log)'")],
+    ["ps",        await q("ps -A 2>/dev/null | grep -E 'dji_glasses|inject' || echo '(not running)'")],
+  ];
+  const lines = ["toolya natartos dump (web)"];
+  for (const [key, val] of entries) {
+    if (val.includes("\n")) {
+      lines.push(`[${key}]`);
+      for (const l of val.split("\n")) lines.push(`  ${l}`);
+    } else {
+      lines.push(`${key}: ${val}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 /** Kill-switch: on = disable mods next boot; off = re-enable + reset bootcount. */
 export async function natartosSafe(adb: Adb, on: boolean): Promise<void> {
   const n = (await getContract()).natartos;

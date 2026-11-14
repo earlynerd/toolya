@@ -63,7 +63,7 @@ pub mod natartos {
     pub const REPO: &str = "grom-labs/natartos";
     pub const STOCK_DIR: &str = "/vendor/natartos/stock";
     pub const MANIFEST_DEVICE: &str = "/vendor/natartos/manifest.json";
-    pub const DEFAULT_LOADER: &str = "/vendor/lib64/natartos_loader.so";
+    pub const DEFAULT_LOADER: &str = "/vendor/natartos/natartos_loader.so";
     pub const BOOTCOUNT: &str = "/data/.natartos_bootcount";
     pub const STATUS: &str = "/data/.natartos_status";
     pub const DISABLED: &str = "/data/.natartos_disabled";

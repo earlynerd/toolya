@@ -3,8 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
-import { fetchLatestRelease, loadManifest, installFromRelease, type Release, type Manifest, type CustomMod } from "./natartos";
-import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, pushFile, pullFile, BG_PATH } from "./adb";
+import { fetchLatestRelease, loadManifest, installFromRelease, startMods, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
+import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile, BG_PATH } from "./adb";
 import { toScreenBmp, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
@@ -420,6 +420,13 @@ async function refreshNatartos() {
     $("nat-status").textContent = s.installed ? s.version : "not installed";
     $("nat-boot").textContent = s.bootcount;
     ($("nat-safe") as HTMLInputElement).checked = s.disabled;
+    const modsEl = $("nat-mods");
+    if (s.mods.length > 0) {
+      $("nat-mods-list").textContent = s.mods.join(", ");
+      modsEl.hidden = false;
+    } else {
+      modsEl.hidden = true;
+    }
   } catch {
     /* leave as-is */
   }
@@ -441,6 +448,10 @@ let natManifest: Manifest | null = null;
 const customMods: CustomMod[] = [];
 function updateNatInstall() {
   btn("nat-install", !((DRY || adb) && natRelease && natManifest));
+  btn("nat-start", !(DRY || adb));
+  btn("nat-noverity", !(DRY || adb));
+  btn("doom-dl", !(DRY || adb));
+  btn("nat-dump", !(DRY || adb));
 }
 function renderMods(m: Manifest) {
   const list = $("mod-list");
@@ -485,8 +496,7 @@ if (DRY) {
   natManifest = {
     schema: 1,
     natartos_version: "v0.3.0-demo",
-    init_rc: { device_path: "/vendor/etc/init/dji_glasses_custom.rc", content: "" },
-    loader: { file: "natartos_loader.so", device_path: "/vendor/lib64/natartos_loader.so", sha256: "" },
+    loader: { file: "natartos_loader.so", device_path: "/vendor/natartos/natartos_loader.so", sha256: "" },
     mods: [
       { id: "screen", name: "Screen mirror", description: "Grab/stream the display over adb (LiveView hook).", provides: "screen", default: true, file: "mod_screen.so", device_path: "/vendor/natartos/mods/mod_screen.so", sha256: "" },
       { id: "background", name: "Custom wallpaper", description: "Show your own background image on the display.", provides: "background", default: true, file: "mod_bg.so", device_path: "/vendor/natartos/mods/mod_bg.so", sha256: "" },
@@ -545,6 +555,97 @@ $("nat-install").addEventListener("click", async () => {
   } finally {
     updateNatInstall();
   }
+});
+
+$("nat-start").addEventListener("click", async () => {
+  if (DRY) { log("demo: would start mods — no real device."); return; }
+  if (!adb) return;
+  btn("nat-start", true);
+  try {
+    await startMods(adb, log);
+    void refreshNatartos();
+  } catch (e) {
+    reportAdbError("natartos start", e);
+  } finally {
+    btn("nat-start", false);
+  }
+});
+$("nat-noverity").addEventListener("click", async () => {
+  if (!confirm(
+    "Disable dm-verity for THIS SESSION ONLY?\n\n" +
+    "DANGER: Do NOT modify /system and reboot — dm-verity mode 2 will BRICK the device.\n" +
+    "No known recovery exists for DJI Goggles 3."
+  )) return;
+  if (DRY) { log("demo: would run dm_noverity — no real device."); return; }
+  if (!adb || !natRelease) return;
+  btn("nat-noverity", true);
+  try {
+    const asset = natRelease.assets.find((a) => a.name === "dm_noverity");
+    if (!asset) throw new Error("dm_noverity not found in release assets — build it locally and use the CLI");
+    log("downloading dm_noverity…");
+    const bytes = await fetch(`/api/dl?u=${encodeURIComponent(asset.browser_download_url)}`)
+      .then((r) => { if (!r.ok) throw new Error(`download failed (${r.status})`); return r.arrayBuffer(); })
+      .then((b) => new Uint8Array(b));
+    await noverity(adb, bytes, log);
+  } catch (e) {
+    reportAdbError("natartos noverity", e);
+  } finally {
+    btn("nat-noverity", false);
+  }
+});
+
+// --- doom WAD ---
+$("doom-dl").addEventListener("click", async () => {
+  if (DRY) { log("demo: would install Doom (Freedoom WAD) — no real device."); return; }
+  if (!adb) return;
+  btn("doom-dl", true);
+  try {
+    await downloadDoomWad(adb, log);
+  } catch (e) {
+    reportAdbError("doom download", e);
+  } finally {
+    btn("doom-dl", false);
+  }
+});
+$("doom-file").addEventListener("change", async (e) => {
+  const file = (e.target as HTMLInputElement).files?.[0];
+  if (!file || !adb) return;
+  btn("doom-dl", true);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await pushDoomWad(adb, bytes, log);
+  } catch (err) {
+    reportAdbError("doom push", err);
+  } finally {
+    btn("doom-dl", false);
+  }
+});
+
+// --- dump (diagnostics for bug reports) ---
+$("nat-dump").addEventListener("click", async () => {
+  if (!adb) return;
+  btn("nat-dump", true);
+  log("collecting diagnostic dump…");
+  try {
+    const text = await natartosDump(adb);
+    const ta = $("dump-text") as HTMLTextAreaElement;
+    ta.value = text;
+    ($("dump-dialog") as HTMLDialogElement).showModal();
+  } catch (err) {
+    reportAdbError("dump", err);
+  } finally {
+    btn("nat-dump", false);
+  }
+});
+$("dump-copy").addEventListener("click", () => {
+  const ta = $("dump-text") as HTMLTextAreaElement;
+  void navigator.clipboard.writeText(ta.value).then(() => {
+    $("dump-copied").hidden = false;
+    setTimeout(() => { $("dump-copied").hidden = true; }, 2000);
+  });
+});
+$("dump-close").addEventListener("click", () => {
+  ($("dump-dialog") as HTMLDialogElement).close();
 });
 
 // --- screen (LiveView frame grab / live stream over adb) ---
@@ -715,6 +816,11 @@ async function disconnect() {
   btn("scr-grab", true);
   btn("ps-stream", true);
   btn("bg-apply", true);
+  btn("nat-start", true);
+  btn("nat-noverity", true);
+  btn("doom-dl", true);
+  btn("nat-dump", true);
+  $("nat-mods").hidden = true;
   if (canUsb) btn("btn-connect", false);
   log("disconnected");
 }

@@ -2,14 +2,15 @@
 //
 // Browser captures screen (getDisplayMedia), encodes JPEG frames,
 // sends over ADB subprocess stdin to fb_receiver on the goggles.
-// fb_receiver decodes JPEG → BGRA → fb_shared → hook_debug.so → DMA-buf → display.
+// fb_receiver decodes JPEG → BGRA → fb_shared → hook_overlay.so → DMA-buf → display.
 //
 // Protocol: [u32le jpeg_size][jpeg_bytes] per frame — same as fb_stream output.
 
 import type { Adb } from "@yume-chan/adb";
-import { pushFile, run } from "./adb";
+import { run } from "./adb";
 
-const FB_RECEIVER_PATH = "/data/local/tmp/fb_receiver";
+const FB_RECEIVER_VENDOR = "/vendor/natartos/apps/stream/fb_receiver";
+const FB_RECEIVER_TMP = "/data/local/tmp/fb_receiver";
 const FB_PIPE_PATH = "/data/local/tmp/fb_pipe";
 
 export interface PcStreamHandle {
@@ -28,23 +29,18 @@ export interface PcStreamOpts {
   onStop?: (reason: string) => void;
 }
 
-let binaryCache: Uint8Array | null = null;
-async function getBinary(): Promise<Uint8Array> {
-  if (binaryCache) return binaryCache;
-  const r = await fetch("/fb_receiver");
-  if (!r.ok) throw new Error(`fetch fb_receiver: ${r.status}`);
-  binaryCache = new Uint8Array(await r.arrayBuffer());
-  return binaryCache;
-}
-
-async function ensureBinary(adb: Adb): Promise<void> {
+async function findReceiver(adb: Adb): Promise<string> {
+  // prefer the natartos-installed binary (no push needed)
   try {
-    const out = await run(adb, `[ -x ${FB_RECEIVER_PATH} ] && echo OK || echo MISSING`);
-    if (out.includes("OK")) return;
+    const out = await run(adb, `[ -x ${FB_RECEIVER_VENDOR} ] && echo OK || echo MISSING`);
+    if (out.includes("OK")) return FB_RECEIVER_VENDOR;
   } catch { /* not present */ }
-  const bin = await getBinary();
-  await pushFile(adb, FB_RECEIVER_PATH, bin);
-  await run(adb, `chmod 755 ${FB_RECEIVER_PATH}`);
+  // fallback: /data/local/tmp (push from bundled or error)
+  try {
+    const out = await run(adb, `[ -x ${FB_RECEIVER_TMP} ] && echo OK || echo MISSING`);
+    if (out.includes("OK")) return FB_RECEIVER_TMP;
+  } catch { /* not present */ }
+  throw new Error("fb_receiver not found — install natartos first (toolya natartos install)");
 }
 
 export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle> {
@@ -76,7 +72,7 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
     }
   }
 
-  await ensureBinary(adb);
+  const receiverPath = await findReceiver(adb);
 
   // Capture screen
   let mediaStream: MediaStream;
@@ -99,7 +95,7 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
 
   const proc = pipeMode
     ? await adb.subprocess.noneProtocol.spawn(`cat > ${FB_PIPE_PATH}`)
-    : await adb.subprocess.noneProtocol.spawn(FB_RECEIVER_PATH);
+    : await adb.subprocess.noneProtocol.spawn(receiverPath);
   const writer = proc.stdin.getWriter();
 
   const video = document.createElement("video");

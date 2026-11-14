@@ -12,6 +12,8 @@
 //!   versions                 list natartos releases
 //!   install [--version <t>] [--local <dir>] [--mods <ids>] [--yes]
 //!   uninstall [--yes]        restore stock from on-device backups
+//!   start                    start mods (after reboot or install)
+//!   noverity [--yes]         disable dm-verity for this session (research)
 //!   status                   bootcount / kill-switch / log
 //!   safe [on|off]            kill-switch toggle
 
@@ -50,7 +52,8 @@ struct Manifest {
     device: String,
     #[serde(default)]
     min_toolya: String,
-    init_rc: InitRc,
+    #[serde(default)]
+    init_rc: Option<InitRc>,
     loader: Artifact,
     #[serde(default)]
     files: Vec<Artifact>,
@@ -237,7 +240,11 @@ fn resolve_local(dir: &Path) -> Result<Resolved, String> {
     let place = |art: &Artifact| -> Result<(), String> {
         let src = find(&art.file)
             .ok_or_else(|| format!("artifact `{}` not found under {}", art.file, dir.display()))?;
-        fs::copy(&src, flat.join(&art.file)).map_err(|e| format!("copy {}: {e}", art.file))?;
+        let dest = flat.join(&art.file);
+        if let Some(p) = dest.parent() {
+            fs::create_dir_all(p).map_err(|e| format!("mkdir {}: {e}", p.display()))?;
+        }
+        fs::copy(&src, &dest).map_err(|e| format!("copy {}: {e}", art.file))?;
         Ok(())
     };
     place(&manifest.loader)?;
@@ -247,6 +254,8 @@ fn resolve_local(dir: &Path) -> Result<Resolved, String> {
     for m in &manifest.mods {
         place(m)?;
     }
+    fs::copy(dir.join("manifest.json"), flat.join("manifest.json"))
+        .map_err(|e| format!("copy manifest.json: {e}"))?;
     Ok(Resolved { manifest, dir: flat, from_release: false })
 }
 
@@ -371,11 +380,16 @@ pub fn run(args: &[String]) {
     match sub {
         "versions" => cmd_versions(),
         "install" => {
-            let confirmed = args.iter().any(|a| a == "--yes");
-            let local = flag_value(args, "--local").map(PathBuf::from);
-            let version = flag_value(args, "--version");
-            let mods = flag_value(args, "--mods");
-            cmd_install(confirmed, local.as_deref(), version.as_deref(), mods.as_deref());
+            if args.get(1).map(String::as_str) == Some("doom") {
+                let wad = flag_value(args, "--wad").map(PathBuf::from);
+                cmd_doom(wad.as_deref());
+            } else {
+                let confirmed = args.iter().any(|a| a == "--yes");
+                let local = flag_value(args, "--local").map(PathBuf::from);
+                let version = flag_value(args, "--version");
+                let mods = flag_value(args, "--mods");
+                cmd_install(confirmed, local.as_deref(), version.as_deref(), mods.as_deref());
+            }
         }
         "uninstall" => cmd_uninstall(args.iter().any(|a| a == "--yes")),
         "status" => cmd_status(),
@@ -398,15 +412,23 @@ pub fn run(args: &[String]) {
                 .or_else(|| args.get(1).filter(|a| !a.starts_with('-')).cloned());
             cmd_snap(output.as_deref());
         }
+        "start" | "inject" => cmd_start(),
+        "dump" | "diag" | "report" => cmd_dump(),
+        "noverity" | "dm-noverity" | "dm_noverity" => {
+            let local = flag_value(args, "--local").map(PathBuf::from);
+            let confirmed = args.iter().any(|a| a == "--yes");
+            cmd_noverity(local.as_deref(), confirmed);
+        }
         "stream" => {
             let dir = flag_value(args, "--local").map(PathBuf::from);
             let stop = args.iter().any(|a| a == "--stop");
             cmd_stream(dir.as_deref(), stop);
         }
         _ => {
-            eprintln!("toolya natartos — mod framework for DJI Goggles 3\n");
+            eprintln!("toolya natartos — mod framework\n");
             eprintln!("Dev:");
             eprintln!("  push [files...]         push .so to the goggles and restart the UI");
+            eprintln!("  start                   start mods (after reboot or install)");
             eprintln!("  snap [-o file.png]      screenshot the goggles' screen (needs hook_overlay)");
             eprintln!("  stream [--local <dir>]  PC Stream: stream the PC screen to the goggles");
             eprintln!("  stream --stop           stop fb_receiver on the goggles");
@@ -415,9 +437,12 @@ pub fn run(args: &[String]) {
             eprintln!("  mods unload <name>      don't load a mod");
             eprintln!("  logs [-f|--follow]      unified log from the goggles");
             eprintln!("  status                  bootcount, kill-switch, version");
+            eprintln!("  dump                    diagnostic dump (for bug reports)");
+            eprintln!("  noverity [--yes]        disable dm-verity for this session (research tool)");
             eprintln!("");
             eprintln!("Install:");
             eprintln!("  install [--local <dir>] [--version <tag>] [--mods id,...] [--yes]");
+            eprintln!("  install doom [--wad <file>]   download Freedoom WAD and push to goggles");
             eprintln!("  uninstall [--yes]");
             eprintln!("  versions                GitHub releases");
             eprintln!("  safe [on|off]           kill-switch");
@@ -527,12 +552,14 @@ fn cmd_push(dir: &Path, files: &[&str], no_restart: bool) {
 
     // Restart dji_glasses
     println!("\nRestarting dji_glasses...");
-    let _ = shell(&mut dev, "rm -f /data/local/tmp/natartos_menu.log");
+    let _ = shell(&mut dev, "mkdir -p /data/local/tmp");
+    let _ = shell(&mut dev, "rm -f /data/local/tmp/natartos_menu.log /data/local/tmp/natartos_inject.log /data/local/tmp/natartos.log");
+    let _ = shell(&mut dev, "sync && echo 3 > /proc/sys/vm/drop_caches");
     let inject = manifest.as_ref()
         .and_then(|m| m.files.iter().find(|a| a.file == "inject.sh"))
         .map(|a| a.device_path.as_str())
         .unwrap_or("/vendor/natartos/inject.sh");
-    let _ = shell(&mut dev, &format!("nohup sh {inject} > /dev/null 2>&1 &"));
+    let _ = shell(&mut dev, &format!("nohup sh {inject} > /data/local/tmp/natartos_inject.log 2>&1 &"));
 
     println!("Waiting 8s for startup...");
     std::thread::sleep(std::time::Duration::from_secs(8));
@@ -735,9 +762,8 @@ fn resolve_device_path(manifest: &Option<Manifest>, name: &str) -> String {
     }
     // defaults
     match name {
-        "natartos_loader.so" => "/vendor/lib64/natartos_loader.so".into(),
+        "natartos_loader.so" => "/vendor/natartos/natartos_loader.so".into(),
         "inject.sh" => "/vendor/natartos/inject.sh".into(),
-        "adb_persist.sh" => "/vendor/natartos/adb_persist.sh".into(),
         _ => format!("/vendor/natartos/mods/{name}"),
     }
 }
@@ -782,7 +808,7 @@ fn cmd_log(follow: bool) {
 
 // --- mods (enable/disable) ---
 
-const ENABLE_PREFIX: &str = "/data/.natartos_on_";
+const ENABLE_PREFIX: &str = "/vendor/natartos/enabled/";
 
 fn cmd_mods(args: &[String]) {
     let mut dev = match adb_device() {
@@ -809,22 +835,27 @@ fn cmd_mods(args: &[String]) {
             }
 
             if action == "load" {
-                let _ = shell(&mut dev, &format!("touch {flag}"));
-                println!("{so_name} — will load");
+                let _ = shell(&mut dev, &format!("mkdir -p {ENABLE_PREFIX} && touch {flag} && sync"));
+                let check = shell(&mut dev, &format!("[ -f {flag} ] && echo OK || echo FAIL")).unwrap_or_default();
+                if check.trim() == "OK" {
+                    println!("{so_name} — enabled");
+                } else {
+                    eprintln!("{so_name} — flag write FAILED");
+                }
             } else {
                 let _ = shell(&mut dev, &format!("rm -f {flag}"));
-                println!("{so_name} — will not load");
+                println!("{so_name} — disabled");
             }
-            println!("restart to apply: toolya natartos push");
+            println!("restart to apply: toolya natartos start");
         }
         _ => {
             let manifest_text = shell(&mut dev, &format!("cat {MANIFEST_DEVICE_PATH} 2>/dev/null"))
                 .unwrap_or_default();
             let manifest: Option<Manifest> = serde_json::from_str(&manifest_text).ok();
 
-            let installed = shell(&mut dev, "ls /vendor/natartos/mods/*.so 2>/dev/null")
+            let installed = shell(&mut dev, "find /vendor/natartos/mods/ -name '*.so' 2>/dev/null")
                 .unwrap_or_default();
-            let flags = shell(&mut dev, &format!("ls {ENABLE_PREFIX}* 2>/dev/null"))
+            let flags = shell(&mut dev, &format!("find {ENABLE_PREFIX} -name '*.so' 2>/dev/null"))
                 .unwrap_or_default();
 
             // Collect all known mods: from device + from manifest
@@ -1066,6 +1097,7 @@ fn cmd_install(confirmed: bool, local_dir: Option<&Path>, version: Option<&str>,
 
     println!("Pushing loader...");
     let _ = shell(&mut dev, &format!("mkdir -p {}", parent_dir(&m.loader.device_path)));
+    let _ = shell(&mut dev, &format!("rm -f {}", m.loader.device_path));
     if let Err(e) = push_file(&mut dev, &loader_local, &m.loader.device_path) {
         eprintln!("FATAL: {e}");
         exit(1);
@@ -1096,17 +1128,30 @@ fn cmd_install(confirmed: bool, local_dir: Option<&Path>, version: Option<&str>,
         let _ = shell(&mut dev, &format!("rm -f {path}"));
     }
 
-    println!("Writing vendor init...");
-    if let Err(e) = push_bytes(&mut dev, m.init_rc.content.as_bytes(), &m.init_rc.device_path) {
-        eprintln!("FATAL: {e}");
-        exit(1);
+    if let Some(ref rc) = m.init_rc {
+        println!("Writing vendor init...");
+        if let Err(e) = push_bytes(&mut dev, rc.content.as_bytes(), &rc.device_path) {
+            eprintln!("FATAL: {e}");
+            exit(1);
+        }
+        let _ = shell(&mut dev, &format!("chmod 644 {}", rc.device_path));
     }
-    let _ = shell(&mut dev, &format!("chmod 644 {}", m.init_rc.device_path));
 
     // record the applied manifest on-device so uninstall knows exact paths
     if let Ok(text) = fs::read_to_string(resolved.dir.join("manifest.json")) {
         let _ = push_bytes(&mut dev, text.as_bytes(), MANIFEST_DEVICE_PATH);
     }
+
+    // auto-enable default mods
+    let _ = shell(&mut dev, &format!("mkdir -p {ENABLE_PREFIX}"));
+    for a in &selected_mods {
+        if a.default {
+            let flag = format!("{ENABLE_PREFIX}{}", a.file);
+            let _ = shell(&mut dev, &format!("touch {flag}"));
+            println!("  enabled (default): {}", a.file);
+        }
+    }
+    let _ = shell(&mut dev, "sync");
 
     // clear stale anti-brick state
     let _ = shell(&mut dev, &format!("rm -f {BOOTCOUNT_PATH} {STATUS_PATH} {DISABLED_PATH}"));
@@ -1115,16 +1160,17 @@ fn cmd_install(confirmed: bool, local_dir: Option<&Path>, version: Option<&str>,
     // Activate immediately: init won't see the new .rc until reboot,
     // so stop stock dji_glasses and run inject.sh now.
     println!("Activating mods (no reboot needed)...");
+    let _ = shell(&mut dev, "sync && echo 3 > /proc/sys/vm/drop_caches");
     let _ = shell(&mut dev, "setprop dji.glasses_service 0");
     let _ = shell(&mut dev, "sleep 2");
     let inject_path = m.files.iter()
         .find(|a| a.file == "inject.sh")
         .map(|a| a.device_path.as_str())
         .unwrap_or("/vendor/natartos/inject.sh");
-    let _ = shell(&mut dev, &format!("nohup sh {inject_path} > /dev/null 2>&1 &"));
+    let _ = shell(&mut dev, &format!("setsid sh {inject_path} </dev/null >/dev/null 2>&1 &"));
 
     println!("\n=== natartos {} installed and activated ===", m.natartos_version);
-    println!("Mods are running. On next reboot they activate automatically.");
+    println!("Mods are running. After a reboot: toolya adb --yes && toolya natartos start");
     println!("Check with:  toolya natartos status");
 }
 
@@ -1175,7 +1221,9 @@ fn cmd_uninstall(confirmed: bool) {
         .as_ref()
         .map(|m| {
             let mut v = m.backup.clone();
-            v.push(m.init_rc.device_path.clone());
+            if let Some(ref rc) = m.init_rc {
+                v.push(rc.device_path.clone());
+            }
             v
         })
         .unwrap_or_else(|| {
@@ -1248,6 +1296,230 @@ fn cmd_status() {
     }
 }
 
+fn cmd_start() {
+    println!("Connecting...");
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); exit(1); }
+    };
+
+    // Check natartos is installed
+    let has_inject = shell(&mut dev, &format!(
+        "[ -f /vendor/natartos/inject.sh ] && echo y || echo n"
+    )).unwrap_or_default();
+    if has_inject.trim() != "y" {
+        eprintln!("natartos is not installed (no inject.sh on device)");
+        eprintln!("Install first: toolya natartos install");
+        exit(1);
+    }
+
+    // SELinux must be permissive for the loader
+    print!("Checking SELinux... ");
+    match crate::selinux::ensure_permissive(&mut dev) {
+        Ok(true) => println!("already Permissive"),
+        Ok(false) => println!("toggled to Permissive"),
+        Err(e) => {
+            eprintln!("\nFATAL: {e}");
+            exit(1);
+        }
+    }
+
+    // Read on-device manifest for inject path
+    let manifest_text = shell(&mut dev, &format!("cat {MANIFEST_DEVICE_PATH} 2>/dev/null"))
+        .unwrap_or_default();
+    let manifest: Option<Manifest> = serde_json::from_str(&manifest_text).ok();
+    let inject_path = manifest.as_ref()
+        .and_then(|m| m.files.iter().find(|a| a.file == "inject.sh"))
+        .map(|a| a.device_path.as_str())
+        .unwrap_or("/vendor/natartos/inject.sh");
+
+    println!("Starting mods...");
+    let _ = shell(&mut dev, "mkdir -p /data/local/tmp");
+    let _ = shell(&mut dev, "rm -f /data/local/tmp/natartos_inject.log /data/local/tmp/natartos_inject.pid /data/local/tmp/natartos_menu.log /data/local/tmp/natartos.log");
+    let _ = shell(&mut dev, "sync && echo 3 > /proc/sys/vm/drop_caches");
+
+    println!("Stopping dji_glasses (USB may drop)...");
+    let _ = shell(&mut dev, "stop dji_glasses; killall dji_glasses 2>/dev/null; sleep 1");
+    std::thread::sleep(std::time::Duration::from_secs(3));
+
+    println!("Reconnecting to launch inject.sh...");
+    drop(dev);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Could not reconnect ({e}) — try again after USB re-plug");
+            exit(1);
+        }
+    };
+
+    println!("Launching inject.sh...");
+    let _ = shell(&mut dev, &format!(
+        "nohup sh {inject_path} > /data/local/tmp/natartos_inject.log 2>&1 &"
+    ));
+
+    println!("Waiting 12s for dji_glasses startup...");
+    std::thread::sleep(std::time::Duration::from_secs(12));
+
+    println!("Reconnecting...");
+    drop(dev);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Could not reconnect ({e}) — check `toolya natartos status` after re-plugging USB");
+            return;
+        }
+    };
+
+    print_device_logs(&mut dev);
+    println!("\nMods started. Check: toolya natartos status");
+}
+
+const NOVERITY_DEVICE_PATH: &str = "/data/local/tmp/dm_noverity";
+
+fn cmd_noverity(local_dir: Option<&Path>, confirmed: bool) {
+    if !confirmed {
+        eprintln!("⚠  dm-verity bypass — research tool, USE WITH CAUTION");
+        eprintln!();
+        eprintln!("This replaces dm-verity with dm-linear on /system for THIS SESSION ONLY.");
+        eprintln!("After reboot, dm-verity is restored automatically.");
+        eprintln!();
+        eprintln!("  ╔══════════════════════════════════════════════════════════════╗");
+        eprintln!("  ║  DANGER: Do NOT modify /system and reboot.                  ║");
+        eprintln!("  ║  dm-verity mode 2 (restart_on_corruption) will BRICK        ║");
+        eprintln!("  ║  the device — no known recovery exists for DJI Goggles 3.   ║");
+        eprintln!("  ╚══════════════════════════════════════════════════════════════╝");
+        eprintln!();
+        eprintln!("Re-run with --yes to proceed:  toolya natartos noverity --yes");
+        exit(1);
+    }
+
+    // Find the dm_noverity binary: --local dir, or dist/, or natartos/tools/
+    let binary = find_noverity_binary(local_dir);
+    let binary = match binary {
+        Some(p) => p,
+        None => {
+            eprintln!("dm_noverity binary not found.");
+            eprintln!("Expected in: dist/dm_noverity, or pass --local <dir>");
+            exit(1);
+        }
+    };
+    println!("Using {}", binary.display());
+
+    println!("Connecting...");
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); exit(1); }
+    };
+
+    // Push binary
+    print!("Pushing dm_noverity... ");
+    if let Err(e) = push_file(&mut dev, &binary, NOVERITY_DEVICE_PATH) {
+        println!("FAIL");
+        eprintln!("{e}");
+        exit(1);
+    }
+    println!("ok");
+    let _ = shell(&mut dev, &format!("chmod 755 {NOVERITY_DEVICE_PATH}"));
+
+    // Run it
+    println!("Running dm_noverity...");
+    let output = shell(&mut dev, NOVERITY_DEVICE_PATH).unwrap_or_default();
+    for line in output.lines() {
+        println!("  {line}");
+    }
+
+    if output.contains("type='linear'") {
+        println!("\ndm-verity disabled for this session.");
+        println!("  mount -o remount,rw /system  — now works (via adb shell)");
+        println!();
+        println!("  ⚠  Do NOT modify /system and reboot — this will brick the device.");
+    } else {
+        eprintln!("\ndm_noverity may have failed — check output above.");
+        exit(1);
+    }
+}
+
+fn find_noverity_binary(local_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = local_dir {
+        let p = dir.join("dm_noverity");
+        if p.exists() { return Some(p); }
+    }
+    for cand in ["dist/dm_noverity", "tools/dm_noverity"] {
+        let p = PathBuf::from(cand);
+        if p.exists() { return Some(p); }
+    }
+    None
+}
+
+const FREEDOOM_ZIP_URL: &str = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip";
+const DOOM_WAD_DEVICE: &str = "/data/local/tmp/freedoom1.wad";
+
+fn cmd_doom(wad_path: Option<&Path>) {
+    let wad_bytes: Vec<u8>;
+
+    if let Some(p) = wad_path {
+        println!("Reading {}…", p.display());
+        wad_bytes = fs::read(p).unwrap_or_else(|e| {
+            eprintln!("cannot read {}: {e}", p.display());
+            exit(1);
+        });
+    } else {
+        println!("Downloading Freedoom Phase 1 (~24 MB)…");
+        let tmp = std::env::temp_dir().join("freedoom-0.13.0.zip");
+        if let Err(e) = download_to(FREEDOOM_ZIP_URL, &tmp) {
+            eprintln!("{e}");
+            exit(1);
+        }
+        println!("Extracting freedoom1.wad…");
+        let output = std::process::Command::new("unzip")
+            .args(["-p", tmp.to_str().unwrap_or(""), "*/freedoom1.wad"])
+            .output();
+        match output {
+            Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+                wad_bytes = o.stdout;
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                eprintln!("unzip failed: {err}");
+                eprintln!("Install unzip or pass --wad <path> with a .wad file");
+                exit(1);
+            }
+            Err(e) => {
+                eprintln!("cannot run unzip: {e}");
+                eprintln!("Install unzip or pass --wad <path> with a .wad file");
+                exit(1);
+            }
+        }
+        let _ = fs::remove_file(&tmp);
+    }
+
+    println!("WAD: {:.1} MB", wad_bytes.len() as f64 / 1048576.0);
+
+    println!("Connecting…");
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); exit(1); }
+    };
+
+    print!("Pushing freedoom1.wad… ");
+    let tmp_local = std::env::temp_dir().join("freedoom1.wad");
+    fs::write(&tmp_local, &wad_bytes).unwrap_or_else(|e| {
+        eprintln!("cannot write temp file: {e}");
+        exit(1);
+    });
+    if let Err(e) = push_file(&mut dev, &tmp_local, DOOM_WAD_DEVICE) {
+        println!("FAIL");
+        eprintln!("{e}");
+        exit(1);
+    }
+    let _ = fs::remove_file(&tmp_local);
+    println!("ok");
+
+    println!("\nDoom ready. Install the doom mod and run: toolya natartos start");
+}
+
 fn cmd_safe(arg: Option<&str>) {
     let mut dev = match adb_device() {
         Ok(d) => d,
@@ -1274,4 +1546,50 @@ fn cmd_safe(arg: Option<&str>) {
             eprintln!("usage: toolya natartos safe <on|off>");
         }
     }
+}
+
+fn cmd_dump() {
+    let mut dev = match adb_device() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("{e}"); exit(1); }
+    };
+    let mut q = |cmd: &str| -> String {
+        shell(&mut dev, cmd).unwrap_or_else(|_| "(error)".into()).trim().to_string()
+    };
+
+    let sections: Vec<(&str, String)> = vec![
+        ("model",    q("getprop ro.product.model")),
+        ("device",   q("getprop ro.product.device")),
+        ("build",    q("getprop ro.build.display.id")),
+        ("kernel",   q("uname -r")),
+        ("id",       q("id")),
+        ("selinux",  q("getenforce 2>&1")),
+        ("usb",      q("getprop sys.usb.config")),
+        ("busybox",  q("busybox 2>&1 | head -1")),
+        ("df",       q("df /vendor /data 2>&1")),
+        ("version",  q(&format!("grep -o '\"natartos_version\"[^,}}]*' {MANIFEST_DEVICE_PATH} 2>/dev/null | cut -d'\"' -f4 || echo '(not installed)'"))),
+        ("bootcount", q(&format!(
+            "if [ -f {BOOTCOUNT_PATH} ]; then od -A n -t u4 -N 4 {BOOTCOUNT_PATH} | tr -d ' '; else echo 0; fi"
+        ))),
+        ("disabled", q(&format!("[ -f {DISABLED_PATH} ] && echo yes || echo no"))),
+        ("mods",     q("ls -la /vendor/natartos/mods/ 2>/dev/null || echo '(none)'")),
+        ("files",    q("ls -la /vendor/natartos/ 2>/dev/null || echo '(not installed)'")),
+        ("loaded",   q("cat /proc/$(pidof dji_glasses)/maps 2>/dev/null | grep natartos || echo '(none)'")),
+        ("inject",   q("cat /data/local/tmp/natartos_inject.pid 2>/dev/null && echo '' || echo '(no pid)'")),
+        ("log",      q("tail -30 /data/local/tmp/natartos_inject.log 2>/dev/null || echo '(no log)'")),
+        ("ps",       q("ps -A 2>/dev/null | grep -E 'dji_glasses|inject' || echo '(not running)'")),
+    ];
+
+    println!("```");
+    println!("toolya natartos dump");
+    for (key, val) in &sections {
+        if val.contains('\n') {
+            println!("[{key}]");
+            for line in val.lines() { println!("  {line}"); }
+        } else {
+            println!("{key}: {val}");
+        }
+    }
+    println!("```");
+    eprintln!("\nPaste this into a GitHub issue or Discord for support.");
 }

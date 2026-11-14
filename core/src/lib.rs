@@ -113,6 +113,13 @@ fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// USB interface + endpoint pair for DUML communication.
+pub struct DumlPort {
+    pub iface: u8,
+    pub ep_out: u8,
+    pub ep_in: u8,
+}
+
 /// Typed enable plan — shared contract between CLI (native) and Web (WASM/JSON).
 /// The transport layer (nusb / WebUSB) executes the plan step by step.
 pub struct EnablePlan {
@@ -120,9 +127,8 @@ pub struct EnablePlan {
     pub init_count: usize,
     pub candidates: Vec<Vec<u8>>,
     pub expect: Vec<u8>,
-    pub iface: u8,
-    pub ep_out: u8,
-    pub ep_in: u8,
+    /// DUML ports to try in order (firmware-dependent USB layout).
+    pub ports: Vec<DumlPort>,
 }
 
 /// Build the typed enable plan (no I/O, no allocation format bias).
@@ -155,9 +161,10 @@ pub fn enable_plan() -> EnablePlan {
         init_count: 4,
         candidates,
         expect: b"</dji>".to_vec(),
-        iface: 4,
-        ep_out: 4,
-        ep_in: 5,
+        ports: vec![
+            DumlPort { iface: 1, ep_out: 1, ep_in: 1 }, // build 38460+ (CDC Data)
+            DumlPort { iface: 4, ep_out: 4, ep_in: 5 }, // earlier builds
+        ],
     }
 }
 
@@ -166,15 +173,17 @@ pub fn enable_plan() -> EnablePlan {
 pub fn enable_plan_json() -> String {
     let p = enable_plan();
     let hex_arr = |v: &[Vec<u8>]| v.iter().map(|b| format!("\"{}\"", hex(b))).collect::<Vec<_>>().join(",");
+    let ports_json = p.ports.iter()
+        .map(|pt| format!("{{\"iface\":{},\"ep_out\":{},\"ep_in\":{}}}", pt.iface, pt.ep_out, pt.ep_in))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"handshake\":[{}],\"init_count\":{},\"candidates\":[{}],\"expect\":\"{}\",\"iface\":{},\"ep_out\":{},\"ep_in\":{}}}",
+        "{{\"handshake\":[{}],\"init_count\":{},\"candidates\":[{}],\"expect\":\"{}\",\"ports\":[{}]}}",
         hex_arr(&p.handshake),
         p.init_count,
         hex_arr(&p.candidates),
         std::str::from_utf8(&p.expect).unwrap_or("</dji>"),
-        p.iface,
-        p.ep_out,
-        p.ep_in,
+        ports_json,
     )
 }
 

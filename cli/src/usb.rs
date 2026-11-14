@@ -3,7 +3,7 @@
 //! Uses `toolya_core::enable_plan()` — same plan the Web client executes over
 //! WebUSB. The transport differs (nusb vs WebUSB), the protocol is shared.
 
-use toolya_core::EnablePlan;
+use toolya_core::{DumlPort, EnablePlan};
 
 pub const VID: u16 = 0x2CA3;
 pub const PID: u16 = 0x0020;
@@ -11,11 +11,14 @@ pub const PID: u16 = 0x0020;
 pub struct Goggles {
     iface: nusb::Interface,
     serial: Option<String>,
+    ep_out: u8,
+    ep_in: u8,
 }
 
 impl Goggles {
     /// Find and open the goggles in DUML (pre-adb) mode.
-    pub fn open() -> Result<Self, String> {
+    /// Tries each port from the plan until one succeeds.
+    pub fn open(ports: &[DumlPort]) -> Result<Self, String> {
         let di = nusb::list_devices()
             .map_err(|e| format!("list usb: {e}"))?
             .find(|d| d.vendor_id() == VID && d.product_id() == PID)
@@ -24,10 +27,13 @@ impl Goggles {
             ))?;
         let serial = di.serial_number().map(|s| s.to_string());
         let dev = di.open().map_err(|e| format!("open device: {e}"))?;
-        let iface = dev
-            .claim_interface(4)
-            .map_err(|e| format!("claim interface 4: {e}"))?;
-        Ok(Self { iface, serial })
+        for p in ports {
+            if let Ok(iface) = dev.claim_interface(p.iface) {
+                return Ok(Self { iface, serial, ep_out: p.ep_out, ep_in: p.ep_in });
+            }
+        }
+        let tried: Vec<String> = ports.iter().map(|p| p.iface.to_string()).collect();
+        Err(format!("no DUML interface found (tried: {})", tried.join(", ")))
     }
 
     pub fn serial(&self) -> Option<&str> {
@@ -58,33 +64,33 @@ impl Goggles {
     /// Execute the full adb-enable plan: handshake → cmd_id scan.
     /// Returns Ok on USB disconnect (= ADB enabling) or Err on failure.
     pub fn run_enable(&self, plan: &EnablePlan, log: impl Fn(&str)) -> Result<(), String> {
+        let ep_in = self.ep_in | 0x80;
+        let ep_out = self.ep_out;
+
         // Drain stale data
         for _ in 0..15 {
-            if self.bulk_in(plan.ep_in | 0x80, 65536).is_err() { break; }
+            if self.bulk_in(ep_in, 65536).is_err() { break; }
         }
 
         log("handshake…");
-        // Send init + probe packets, accumulate IN data, watch for `expect`
         let mut blob = Vec::new();
         let mut got_expect = false;
         for (i, pkt) in plan.handshake.iter().enumerate() {
             if got_expect { break; }
-            if self.bulk_out(plan.ep_out, pkt).is_err() { break; }
+            if self.bulk_out(ep_out, pkt).is_err() { break; }
             let delay = if i < plan.init_count { 50 } else { 60 };
             std::thread::sleep(std::time::Duration::from_millis(delay));
-            // Read whatever is available
-            if let Ok(data) = self.bulk_in(plan.ep_in | 0x80, 65536) {
+            if let Ok(data) = self.bulk_in(ep_in, 65536) {
                 blob.extend_from_slice(&data);
                 if contains_subslice(&blob, &plan.expect) {
                     got_expect = true;
                 }
             }
         }
-        // Give reader a moment to catch the tail
         for _ in 0..20 {
             if got_expect { break; }
             std::thread::sleep(std::time::Duration::from_millis(50));
-            if let Ok(data) = self.bulk_in(plan.ep_in | 0x80, 65536) {
+            if let Ok(data) = self.bulk_in(ep_in, 65536) {
                 blob.extend_from_slice(&data);
                 if contains_subslice(&blob, &plan.expect) {
                     got_expect = true;
@@ -97,28 +103,25 @@ impl Goggles {
             log("handshake ok");
         }
 
-        // Drain before scan
         std::thread::sleep(std::time::Duration::from_millis(200));
         for _ in 0..15 {
-            if self.bulk_in(plan.ep_in | 0x80, 65536).is_err() { break; }
+            if self.bulk_in(ep_in, 65536).is_err() { break; }
         }
 
-        // cmd_id scan: send candidates until write fails (= USB disconnect = success)
         log("enabling adb (scanning cmd_id)…");
         for pkt in &plan.candidates {
-            match self.bulk_out(plan.ep_out, pkt) {
+            match self.bulk_out(ep_out, pkt) {
                 Err(_) => {
                     log("adb enabling — goggles re-enumerate in ~5s. Then `adb devices`.");
                     return Ok(());
                 }
                 Ok(()) => {}
             }
-            // Read response, skip broadcasts
             for _ in 0..8 {
-                match self.bulk_in(plan.ep_in | 0x80, 1024) {
+                match self.bulk_in(ep_in, 1024) {
                     Ok(r) if r.len() >= 11 && r[8] == 0xC0 && r[10] == pkt[10] => {
                         let ret = if r.len() > 11 { r[11] } else { 0 };
-                        if ret == 0xE0 { break; } // firewall block, try next
+                        if ret == 0xE0 { break; }
                         break;
                     }
                     Ok(_) => continue,

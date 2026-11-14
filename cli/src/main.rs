@@ -67,7 +67,7 @@ fn main() {
             let no_telemetry = args.iter().any(|a| a == "--no-telemetry");
             // Full enable: handshake + cmd_id scan — same plan the Web client uses.
             let plan = toolya_core::enable_plan();
-            let goggles = match usb::Goggles::open() {
+            let goggles = match usb::Goggles::open(&plan.ports) {
                 Ok(g) => g,
                 Err(e) => { eprintln!("toolya adb: {e}"); exit(1); }
             };

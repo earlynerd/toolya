@@ -41,18 +41,29 @@ case \"$V\" in 0x01000100|0x01000000) busybox devmem $(printf 0x%X $((A+{ENFORCE
     )
 }
 
+fn read_enforce(dev: &mut AdbConn) -> Result<bool, String> {
+    let status = shell(dev, "getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null || getprop ro.boot.selinux 2>/dev/null")?;
+    let t = status.trim();
+    if t.eq_ignore_ascii_case("Permissive") || t == "0" {
+        return Ok(true);
+    }
+    if t.eq_ignore_ascii_case("Enforcing") || t == "1" {
+        return Ok(false);
+    }
+    Err(format!("cannot read SELinux state (got: {t})"))
+}
+
 /// Ensure SELinux is Permissive on the device. Returns Ok(true) if it was already
 /// permissive, Ok(false) if we had to toggle it. Err on failure.
 pub fn ensure_permissive(dev: &mut AdbConn) -> Result<bool, String> {
-    let status = shell(dev, "getenforce")?;
-    if status.trim().eq_ignore_ascii_case("Permissive") {
+    if read_enforce(dev)? {
         return Ok(true);
     }
-    let result = shell(dev, &set_shell("0x00"))?;
-    if result.trim().eq_ignore_ascii_case("Permissive") {
+    let _ = shell(dev, &set_shell("0x00"))?;
+    if read_enforce(dev)? {
         Ok(false)
     } else {
-        Err(format!("failed to set SELinux permissive (got: {})", result.trim()))
+        Err("failed to set SELinux permissive via devmem".into())
     }
 }
 
@@ -63,8 +74,9 @@ pub fn run(args: &[String]) {
     match sub {
         "status" => {
             let mut dev = connect();
-            match shell(&mut dev, "getenforce") {
-                Ok(s) => println!("SELinux: {}", s.trim()),
+            match read_enforce(&mut dev) {
+                Ok(true) => println!("SELinux: Permissive"),
+                Ok(false) => println!("SELinux: Enforcing"),
                 Err(e) => {
                     eprintln!("{e}");
                     exit(1);

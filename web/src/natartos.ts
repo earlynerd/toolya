@@ -7,7 +7,7 @@
 // the Install button stays inert until a release with the anti-brick loader exists.
 
 import type { Adb } from "@yume-chan/adb";
-import { run, pushFile } from "./adb";
+import { run, pushFile, getSelinux, setSelinux } from "./adb";
 import { getContract } from "./wasm";
 
 interface Artifact {
@@ -28,7 +28,7 @@ export interface Manifest {
   schema: number;
   natartos_version?: string;
   device?: string;
-  init_rc: { device_path: string; content: string };
+  init_rc?: { device_path: string; content: string };
   loader: Artifact;
   files?: Artifact[];
   mods?: Mod[];
@@ -141,7 +141,7 @@ export async function installFromRelease(
   }
 
   // 3. validate every path/mode (manifest + custom are untrusted; writes stay under /vendor)
-  const rcPath = vendorPath(manifest.init_rc.device_path);
+  const rcPath = manifest.init_rc ? vendorPath(manifest.init_rc.device_path) : null;
   const loaderPlan = {
     file: manifest.loader.file,
     path: vendorPath(manifest.loader.device_path),
@@ -186,9 +186,11 @@ export async function installFromRelease(
   }
   for (const p of removes) await run(adb, `rm -f ${shq(p)}`);
 
-  log("writing vendor init…");
-  await pushFile(adb, rcPath, te(manifest.init_rc.content));
-  await run(adb, `chmod 644 ${shq(rcPath)}`);
+  if (manifest.init_rc && rcPath) {
+    log("writing vendor init…");
+    await pushFile(adb, rcPath, te(manifest.init_rc.content));
+    await run(adb, `chmod 644 ${shq(rcPath)}`);
+  }
   // record installed state (version + chosen mod ids + custom names) for status/uninstall
   const installed = {
     natartos_version: manifest.natartos_version,
@@ -197,9 +199,159 @@ export async function installFromRelease(
   };
   await pushFile(adb, nc.manifest_device, te(JSON.stringify(manifest)));
   await pushFile(adb, "/vendor/natartos/installed.json", te(JSON.stringify(installed)));
+
+  // auto-enable default mods (opt-in flags for inject.sh)
+  await run(adb, "mkdir -p /vendor/natartos/enabled");
+  for (const m of chosen) {
+    if (m.default) {
+      await run(adb, `touch ${shq(`/vendor/natartos/enabled/${m.file}`)}`);
+      log(`  enabled (default): ${m.file}`);
+    }
+  }
+  for (const c of customPlan) {
+    const base = c.path.split("/").pop()!;
+    await run(adb, `touch ${shq(`/vendor/natartos/enabled/${base}`)}`);
+    log(`  enabled (custom): ${base}`);
+  }
+
   await run(adb, `rm -f ${nc.bootcount} ${nc.status} ${nc.disabled}`);
   await run(adb, "sync");
 
-  log(`natartos ${manifest.natartos_version ?? ""} installed (${chosen.length + customPlan.length} mod(s)) — reboot to activate.`);
+  log(`natartos ${manifest.natartos_version ?? ""} installed (${chosen.length + customPlan.length} mod(s)) — click Start to activate.`);
   return chosen.map((m) => m.id);
+}
+
+/** Start mods on the device — runs inject.sh without reinstalling. */
+export async function startMods(
+  adb: Adb,
+  log: (s: string) => void,
+): Promise<void> {
+  const { natartos: nc } = await getContract();
+  const injectPath = "/vendor/natartos/inject.sh";
+  const exists = (await run(adb, `[ -f ${shq(injectPath)} ] && echo y || echo n`)).trim();
+  if (exists !== "y") throw new Error("natartos is not installed (no inject.sh on device)");
+
+  const sel = await getSelinux(adb);
+  if (!sel.toLowerCase().startsWith("perm")) {
+    log("SELinux is enforcing — switching to permissive…");
+    await setSelinux(adb, "permissive");
+  }
+
+  log("starting mods…");
+  await run(adb, `rm -f ${nc.log}`);
+  await run(adb, "sync && echo 3 > /proc/sys/vm/drop_caches");
+
+  // inject.sh stops dji_glasses internally (which drops USB briefly),
+  // so launch it in background — the web ADB session may disconnect.
+  await run(adb, `nohup sh ${shq(injectPath)} > /dev/null 2>&1 &`);
+
+  log("waiting for startup (USB may reconnect)…");
+  await new Promise((r) => setTimeout(r, 12000));
+
+  const logText = (await run(adb, `cat ${nc.log} 2>/dev/null`)).trim();
+  if (logText) log(logText);
+  log("mods started");
+}
+
+const FREEDOOM_ZIP = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip";
+const DOOM_WAD_PATH = "/vendor/natartos/apps/doom/freedoom1.wad";
+
+/** Download Freedoom Phase 1 WAD from GitHub, extract, push to device. */
+export async function downloadDoomWad(
+  adb: Adb,
+  log: (s: string) => void,
+): Promise<void> {
+  log("downloading Freedoom (~24 MB zip)…");
+  const zip = await dl(FREEDOOM_ZIP);
+  log("extracting freedoom1.wad…");
+  const wad = await extractFromZip(zip, /freedoom1\.wad$/i);
+  if (!wad) throw new Error("freedoom1.wad not found in archive");
+  log(`pushing freedoom1.wad (${(wad.byteLength / 1048576).toFixed(1)} MB)…`);
+  await run(adb, "mount -o remount,rw /vendor");
+  await run(adb, `mkdir -p ${shq(parentDir(DOOM_WAD_PATH))}`);
+  await pushFile(adb, DOOM_WAD_PATH, wad);
+  log("Doom WAD installed");
+}
+
+/** Push a user-supplied WAD file to the device. */
+export async function pushDoomWad(
+  adb: Adb,
+  bytes: Uint8Array,
+  log: (s: string) => void,
+): Promise<void> {
+  log(`pushing WAD (${(bytes.byteLength / 1048576).toFixed(1)} MB)…`);
+  await run(adb, "mount -o remount,rw /vendor");
+  await run(adb, `mkdir -p ${shq(parentDir(DOOM_WAD_PATH))}`);
+  await pushFile(adb, DOOM_WAD_PATH, bytes);
+  log("WAD installed");
+}
+
+async function extractFromZip(data: Uint8Array, nameRe: RegExp): Promise<Uint8Array | null> {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let eocd = -1;
+  for (let i = data.length - 22; i >= Math.max(0, data.length - 65558); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("not a valid zip");
+  const cdOff = view.getUint32(eocd + 16, true);
+  const cdCount = view.getUint16(eocd + 10, true);
+  let off = cdOff;
+  for (let i = 0; i < cdCount; i++) {
+    if (view.getUint32(off, true) !== 0x02014b50) break;
+    const method = view.getUint16(off + 10, true);
+    const compSize = view.getUint32(off + 20, true);
+    const nameLen = view.getUint16(off + 28, true);
+    const extraLen = view.getUint16(off + 30, true);
+    const commentLen = view.getUint16(off + 32, true);
+    const localOff = view.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(data.subarray(off + 46, off + 46 + nameLen));
+    if (nameRe.test(name)) {
+      const lNameLen = view.getUint16(localOff + 26, true);
+      const lExtraLen = view.getUint16(localOff + 28, true);
+      const dataStart = localOff + 30 + lNameLen + lExtraLen;
+      const raw = data.subarray(dataStart, dataStart + compSize);
+      if (method === 0) return new Uint8Array(raw);
+      if (method === 8) {
+        const ds = new DecompressionStream("deflate-raw");
+        const w = ds.writable.getWriter();
+        void w.write(raw).then(() => w.close());
+        const r = ds.readable.getReader();
+        const chunks: Uint8Array[] = [];
+        for (;;) { const { done, value } = await r.read(); if (done) break; chunks.push(value); }
+        const total = chunks.reduce((s, c) => s + c.byteLength, 0);
+        const out = new Uint8Array(total);
+        let p = 0;
+        for (const c of chunks) { out.set(c, p); p += c.byteLength; }
+        return out;
+      }
+      throw new Error(`unsupported zip method ${method}`);
+    }
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return null;
+}
+
+/** Push + run dm_noverity on the device — disables dm-verity for this session. */
+export async function noverity(
+  adb: Adb,
+  binary: Uint8Array,
+  log: (s: string) => void,
+): Promise<boolean> {
+  const dest = "/data/local/tmp/dm_noverity";
+
+  log("pushing dm_noverity…");
+  await pushFile(adb, dest, binary);
+  await run(adb, `chmod 755 ${dest}`);
+
+  log("running dm_noverity…");
+  const output = await run(adb, dest);
+  for (const line of output.split("\n")) if (line.trim()) log(`  ${line}`);
+
+  const ok = output.includes("type='linear'");
+  if (ok) {
+    log("dm-verity disabled for this session");
+  } else {
+    log("dm_noverity may have failed — check output above");
+  }
+  return ok;
 }
