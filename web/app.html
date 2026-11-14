@@ -155,6 +155,7 @@ button:disabled,input:disabled,select:disabled,.switch input:disabled{opacity:.4
 .pair b{font:500 14px var(--mono)}
 .hint{margin:14px 0 0;padding-top:12px;border-top:1px solid var(--hair);color:var(--muted);font-size:13px}
 canvas{display:block;width:100%;aspect-ratio:16/9;background:var(--well);border-radius:8px}
+canvas:fullscreen{width:100vw;height:100vh;aspect-ratio:auto;object-fit:contain;background:#000;border-radius:0}
 .card canvas.wide{margin-top:14px}
 #bg-preview{aspect-ratio:2/1}
 
@@ -390,6 +391,7 @@ footer b{color:var(--fg);font-weight:600}
                 <input class="field" id="scr-path" value="/data/local/tmp/screencap.bin" aria-label="frame path" autocomplete="off" spellcheck="false">
                 <button class="btn" id="scr-grab" type="button" disabled>Grab frame</button>
                 <label class="switch"><input type="checkbox" id="scr-auto" role="switch"> stream</label>
+                <button class="btn sm push" id="scr-fs" type="button">⛶ Fullscreen</button>
               </div>
               <canvas class="wide" id="scr-canvas" width="640" height="360" role="img" aria-label="Goggles screen mirror"></canvas>
               <p class="hint">Live BGRA 1920×1080 over adb. With natartos <b>display hook</b> installed → fb_shared mode (faster, no trigger). Without → screencap trigger mode (~2-3 fps).</p>
@@ -431,7 +433,7 @@ footer b{color:var(--fg);font-weight:600}
               <p class="hint">Stream your PC screen to the goggles over USB. <code>fb_receiver</code> is pushed automatically; JPEG frames go through the ADB connection. Needs the natartos <b>display hook</b> for fb_shared inject.</p>
             </div>
           </details>
-          <details class="card">
+          <details class="card" hidden>
             <summary>Boot splash <span class="state">needs the splash mod</span></summary>
             <div class="details-body">
               <p class="muted" style="margin:0;font-size:13px">Replace the boot splash with your own image — provided by a natartos <b>splash mod</b> (not available yet). The stock splash lives in a partition, not a <code>/data</code> file, so it needs its own mod to hook.</p>

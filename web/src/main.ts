@@ -682,6 +682,12 @@ function stopStream() {
   if (scrFps) scrFps.textContent = "";
 }
 
+$("scr-fs").addEventListener("click", () => {
+  const cv = $("scr-canvas") as HTMLCanvasElement;
+  if (document.fullscreenElement) void document.exitFullscreen();
+  else cv.requestFullscreen?.().catch((e) => log("fullscreen: " + (e as Error).message));
+});
+
 $("scr-grab").addEventListener("click", () => void grabScreen());
 $("scr-auto").addEventListener("change", async (e) => {
   if ((e.target as HTMLInputElement).checked) {
