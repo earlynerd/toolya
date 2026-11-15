@@ -42,15 +42,21 @@ case \"$V\" in 0x01000100|0x01000000) busybox devmem $(printf 0x%X $((A+{ENFORCE
 }
 
 fn read_enforce(dev: &mut AdbConn) -> Result<bool, String> {
-    let status = shell(dev, "getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null || getprop ro.boot.selinux 2>/dev/null")?;
-    let t = status.trim();
-    if t.eq_ignore_ascii_case("Permissive") || t == "0" {
-        return Ok(true);
+    // `getenforce` on the G3 intermittently answers "Couldn't get enforcing
+    // status: Permission denied", so retry and fall back to sysfs / prop reads.
+    let mut last = String::new();
+    for _ in 0..4 {
+        let status = shell(dev, "getenforce 2>/dev/null || cat /sys/fs/selinux/enforce 2>/dev/null || getprop ro.boot.selinux 2>/dev/null")?;
+        let t = status.trim();
+        if t.eq_ignore_ascii_case("Permissive") || t == "0" {
+            return Ok(true);
+        }
+        if t.eq_ignore_ascii_case("Enforcing") || t == "1" {
+            return Ok(false);
+        }
+        last = t.to_string();
     }
-    if t.eq_ignore_ascii_case("Enforcing") || t == "1" {
-        return Ok(false);
-    }
-    Err(format!("cannot read SELinux state (got: {t})"))
+    Err(format!("cannot read SELinux state (got: {last})"))
 }
 
 /// Ensure SELinux is Permissive on the device. Returns Ok(true) if it was already
@@ -92,19 +98,25 @@ pub fn run(args: &[String]) {
                 exit(1);
             }
             let mut dev = connect();
-            match shell(&mut dev, &set_shell(byte)) {
-                Ok(s) => {
-                    let now = s.trim();
-                    println!("SELinux: {now}");
-                    let want = if sub == "permissive" { "Permissive" } else { "Enforcing" };
-                    if !now.eq_ignore_ascii_case(want) {
-                        eprintln!("(no known selinux_state address matched — kernel build may be new; ask the researcher to add its address)");
+            if let Err(e) = shell(&mut dev, &set_shell(byte)) {
+                eprintln!("{e}");
+                exit(1);
+            }
+            // Confirm via the robust reader — NOT set_shell's trailing getenforce,
+            // which flaps on the G3 and would falsely report failure.
+            let want_permissive = sub == "permissive";
+            match read_enforce(&mut dev) {
+                Ok(p) => {
+                    println!("SELinux: {}", if p { "Permissive" } else { "Enforcing" });
+                    if p != want_permissive {
+                        eprintln!("(devmem poke did not take — no known selinux_state address matched this kernel build)");
                         exit(1);
                     }
                 }
-                Err(e) => {
-                    eprintln!("{e}");
-                    exit(1);
+                Err(_) => {
+                    // Poke ran but the state couldn't be read back (getenforce denied,
+                    // sysfs unreadable). Best-effort: report what we asked for.
+                    println!("SELinux: {} (unconfirmed)", if want_permissive { "Permissive" } else { "Enforcing" });
                 }
             }
         }

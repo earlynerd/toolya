@@ -13,23 +13,21 @@ mod usbmode;
 
 use std::process::exit;
 
+// Not yet implemented. snap/stream/push/pull DO work — they live under the
+// natartos modloader and are aliased at the top level in main() below.
 const STUBS: &[(&str, &str)] = &[
-    ("shell", "M1 · one-shot wrapper over broken interactive shell"),
-    ("log", "M1 · adb logcat"),
-    ("push", "M1 · adb push"),
-    ("pull", "M1 · adb pull"),
-    ("power", "M2 · power off/on (cmd_id TBD)"),
-    ("awake", "M2 · inhibit auto-sleep"),
-    ("snap", "M3 · single frame"),
-    ("stream", "M3 · video out to local window"),
-    ("record", "M3 · stream to file"),
-    ("tx", "M4 · transmitter off/on (cmd_id TBD)"),
-    ("fan", "M4 · fan quiet/auto with temp guard"),
-    ("temp", "M4 · temperature readout"),
-    ("mute", "M4 · audio mute"),
-    ("brightness", "M4 · display brightness"),
-    ("backup", "M5 · dump a partition/config"),
-    ("emu", "M6 · host-mode dev (research)"),
+    ("shell", "RE needed · interactive shell is broken on the G3"),
+    ("log", "RE needed · adb logcat wrapper"),
+    ("power", "RE needed · power off/on (cmd_id unknown)"),
+    ("awake", "RE needed · inhibit auto-sleep"),
+    ("record", "RE needed · stream to file"),
+    ("tx", "RE needed · transmitter off/on (cmd_id unknown)"),
+    ("fan", "RE needed · fan quiet/auto with temp guard"),
+    ("temp", "RE needed · temperature readout"),
+    ("mute", "RE needed · audio mute (cf. natartos mute mod)"),
+    ("brightness", "RE needed · display brightness"),
+    ("backup", "RE needed · dump a partition/config"),
+    ("emu", "RE needed · host-mode dev (research)"),
 ];
 
 
@@ -43,7 +41,9 @@ fn usage() {
     eprintln!("  reboot [--hard]         show reboot plan (graceful / sysrq)");
     eprintln!("  selinux <status|permissive|enforcing> [--yes]  session SELinux toggle (devmem)");
     eprintln!("  natartos <sub>          mod framework (install/push/status/log/safe/...)");
+    eprintln!("  snap|stream|push|pull   on-device capture / transfer (needs natartos)");
     eprintln!("  desk                    show desk-mode step sequence");
+    eprintln!("\nnot implemented yet:");
     for (n, d) in STUBS { eprintln!("  {:<22}  {}", n, d); }
 }
 
@@ -145,6 +145,9 @@ fn main() {
         }
         "selinux" => selinux::run(&args[1..]),
         "natartos" => natartos::run(&args[1..]),
+        // These are implemented inside the natartos modloader; expose them at the
+        // top level too (they need natartos installed on the goggles).
+        "snap" | "stream" | "push" | "pull" => natartos::run(&args),
         "desk" => desk::run(),
         "duml-show" => match args.get(1).map(String::as_str) {
             Some("adb-enable") => {
@@ -162,7 +165,7 @@ fn main() {
             other => { eprintln!("unknown action: {}", other.unwrap_or("<none>")); exit(1); }
         },
         name => match STUBS.iter().find(|(n, _)| *n == name) {
-            Some((_, d)) => { eprintln!("🔴 toolya {}: not implemented yet — {}", name, d); exit(2); }
+            Some((_, d)) => { eprintln!("🔴 toolya {}: not implemented — {}", name, d); exit(2); }
             None => { eprintln!("unknown command: {}\n", name); usage(); exit(1); }
         },
     }
