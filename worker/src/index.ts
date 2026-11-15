@@ -212,12 +212,14 @@ export default {
       } catch {
         return new Response("bad url", { status: 400 });
       }
-      // tight allowlist: only grom-labs/natartos release downloads on github.com.
-      // (the worker follows the redirect to githubusercontent.com server-side.)
+      // tight allowlist: grom-labs/natartos release assets, plus the Freedoom
+      // release (the Doom WAD source the client references). github.com only —
+      // the worker follows the redirect to githubusercontent.com server-side.
       const ok =
         target.protocol === "https:" &&
         target.hostname === "github.com" &&
-        target.pathname.startsWith("/grom-labs/natartos/releases/");
+        (target.pathname.startsWith("/grom-labs/natartos/releases/") ||
+          target.pathname.startsWith("/freedoom/freedoom/releases/"));
       if (!ok) return new Response("forbidden", { status: 403 });
       const up = await fetch(target.toString(), { headers: { "User-Agent": "toolya" }, redirect: "follow" });
       return withCors(new Response(up.body, {
