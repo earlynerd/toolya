@@ -272,21 +272,28 @@ export async function startMods(
   const logText = (await run(adb, `cat ${nc.log} 2>/dev/null`)).trim();
   if (logText) log(logText);
 
-  // Verify dji_glasses actually re-spawned under the loader. Stopping it
-  // re-enumerates USB, so the read may fail on a dropped handle — only a clear
-  // "0 mapped" is treated as failure; an unreadable handle asks for a reconnect.
+  // Verify dji_glasses re-spawned under the loader. The overlay repaints by
+  // restarting dji_glasses, so a single live read can land mid-respawn (USB
+  // re-enumerating) and report 0 even though the mods loaded. Poll a few times,
+  // and accept the loader log itself as proof ("mods loaded: N") when the live
+  // read keeps racing.
+  const logLoaded = /mods loaded:\s*[1-9]/.test(logText);
   let loaded = "";
-  try {
-    loaded = (
-      await run(adb, `cat /proc/$(pidof dji_glasses)/maps 2>/dev/null | grep -c natartos_loader`)
-    ).trim();
-  } catch {
-    /* USB likely re-enumerated — can't confirm from here */
+  for (let i = 0; i < 6; i++) {
+    try {
+      loaded = (
+        await run(adb, `cat /proc/$(pidof dji_glasses)/maps 2>/dev/null | grep -c natartos_loader`)
+      ).trim();
+    } catch {
+      loaded = ""; // USB likely re-enumerated — can't read this handle
+    }
+    if (loaded && loaded !== "0") break;
+    await new Promise((r) => setTimeout(r, 1500));
   }
-  if (loaded === "0") {
+  if (!logLoaded && loaded === "0") {
     throw new Error("inject.sh ran but no mods are loaded — check status / log");
   }
-  log(loaded && loaded !== "0" ? "mods started — loader mapped" : "mods started — reconnect and Refresh to confirm");
+  log(loaded && loaded !== "0" ? "mods started — loader mapped" : "mods started — confirmed from loader log");
 }
 
 /** Uninstall natartos: restore stock originals + remove all natartos files.
@@ -326,6 +333,26 @@ export async function uninstallNatartos(adb: Adb, log: (s: string) => void): Pro
   await run(adb, `rm -f ${nc.bootcount} ${nc.status} ${nc.disabled}`);
   await run(adb, "rm -f /data/.natartos_* /data/local/tmp/fb_* /data/local/tmp/natartos* /data/local/tmp/vidplane /data/local/tmp/screencap.bin 2>/dev/null; sync");
   log("natartos removed — reboot the goggles to return to fully stock.");
+}
+
+/** Set a custom disconnect background. The stock UI loads
+ *  /system/etc/extern_bitmap/background_disconnect.jpg (read-only /system); the
+ *  hook_bitmap mod redirects that open() to /vendor/custom/extern_bitmap/ when
+ *  the flag is present. So: push the JPEG there, set the flag, enable the mod,
+ *  and restart so the hook takes effect. */
+export async function applyBackground(adb: Adb, jpeg: Uint8Array, log: (s: string) => void): Promise<void> {
+  const has = (await run(adb, "[ -f /vendor/natartos/mods/hook_bitmap.so ] && echo y || echo n")).trim();
+  if (has !== "y") throw new Error("the Custom Background mod (hook_bitmap) isn't installed — reinstall natartos including it");
+  const sel = await getSelinux(adb);
+  if (!sel.toLowerCase().startsWith("perm")) { log("SELinux is enforcing — switching to permissive…"); await setSelinux(adb, "permissive"); }
+  await run(adb, "mount -o remount,rw /vendor");
+  await run(adb, "mkdir -p /vendor/custom/extern_bitmap");
+  log("writing background…");
+  await pushFile(adb, "/vendor/custom/extern_bitmap/background_disconnect.jpg", jpeg);
+  await run(adb, "touch /data/local/tmp/natartos_background");
+  await run(adb, "touch /vendor/natartos/enabled/hook_bitmap.so");
+  log("background set — restarting mods so it takes effect…");
+  await startMods(adb, log);
 }
 
 /** Enable or disable one installed mod by touching/removing its enabled/ flag.

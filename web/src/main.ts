@@ -3,9 +3,9 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
-import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
-import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile, BG_PATH } from "./adb";
-import { toScreenBmp, previewInto, bgraToCanvas } from "./image";
+import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
+import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile } from "./adb";
+import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
 import { sendKey, holdKey } from "./input";
@@ -300,7 +300,7 @@ async function doConnect() {
     setDpad(true);
     btn("scr-grab", false);
     btn("ps-stream", false);
-    if (bgBytes) btn("bg-apply", false);
+    if (bgJpeg) btn("bg-apply", false);
     void startTerminal(adb);
     startHeartbeat();
     let devHash: string | undefined;
@@ -348,7 +348,7 @@ function fakeConnect() {
   updateNatInstall();
   setDpad(true);
   btn("scr-grab", false);
-  if (bgBytes) btn("bg-apply", false);
+  if (bgJpeg) btn("bg-apply", false);
   $("selinux-state").textContent = "Enforcing";
   $("nat-status").textContent = "not installed";
   $("nat-boot").textContent = "0";
@@ -831,7 +831,7 @@ $("scr-auto").addEventListener("change", async (e) => {
 // --- background image converter ---
 const bgFile = $("bg-file") as HTMLInputElement;
 const bgFit = $("bg-fit") as HTMLSelectElement;
-let bgBytes: Uint8Array<ArrayBuffer> | null = null;
+let bgJpeg: Uint8Array<ArrayBuffer> | null = null;
 
 async function bgUpdate() {
   const f = bgFile.files?.[0];
@@ -842,15 +842,15 @@ async function bgUpdate() {
   err.hidden = true;
   try {
     await previewInto($("bg-preview") as HTMLCanvasElement, f, fit);
-    bgBytes = await toScreenBmp(f, fit);
+    bgJpeg = await toScreenJpeg(f, fit);
     btn("bg-download", false);
     btn("bg-apply", !adb);
-    log(`background ready: ${(bgBytes.length / 1e6).toFixed(1)} MB BMP (1920×1080)`);
+    log(`background ready: ${(bgJpeg.length / 1e6).toFixed(1)} MB JPEG (1920×1080)`);
   } catch (e) {
     // Decode failed (usually a HEIC/HEIF phone photo the browser can't read):
     // reset state so a bad pick can't leave stale bytes / enabled buttons, and
     // show the reason on the card — the console log is off-screen.
-    bgBytes = null;
+    bgJpeg = null;
     btn("bg-download", true);
     btn("bg-apply", true);
     const m = (e as Error).message;
@@ -865,24 +865,27 @@ bgFile.addEventListener("change", () => void bgUpdate());
 bgFit.addEventListener("change", () => void bgUpdate());
 
 $("bg-download").addEventListener("click", () => {
-  if (!bgBytes) return;
-  const url = URL.createObjectURL(new Blob([bgBytes], { type: "image/bmp" }));
+  if (!bgJpeg) return;
+  const url = URL.createObjectURL(new Blob([bgJpeg], { type: "image/jpeg" }));
   const a = document.createElement("a");
   a.href = url;
-  a.download = "screendesk_1920.bmp";
+  a.download = "background_disconnect.jpg";
   a.click();
   URL.revokeObjectURL(url);
 });
 
 $("bg-apply").addEventListener("click", async () => {
-  if (!adb || !bgBytes) return;
-  if (!confirm(`Write background to the goggles (${BG_PATH})?`)) return;
-  log("pushing background…");
+  if (!adb || !bgJpeg) return;
+  if (!confirm("Set this as the goggles' disconnect background? Needs natartos installed with the Custom Background mod — it will be enabled and mods restarted.")) return;
+  btn("bg-apply", true);
   try {
-    await pushFile(adb, BG_PATH, bgBytes);
-    log("background written — a UI refresh or reboot may be needed to show it.");
+    await applyBackground(adb, bgJpeg, log);
+    log("background applied — shows on the disconnect/idle screen.");
+    void refreshNatartos();
   } catch (e) {
     reportAdbError("background apply", e);
+  } finally {
+    btn("bg-apply", !adb);
   }
 });
 

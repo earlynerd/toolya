@@ -96,6 +96,28 @@ export async function toScreenBmp(file: File, fit: "cover" | "contain" = "cover"
   return bmp24FromRgba(data, SCREEN_W, SCREEN_H);
 }
 
+/// Convert a photo File to a 1920x1080 JPEG — the format the stock goggles UI
+/// loads from extern_bitmap (background_disconnect.jpg).
+export async function toScreenJpeg(
+  file: File,
+  fit: "cover" | "contain" = "cover",
+  quality = 0.92,
+): Promise<Uint8Array<ArrayBuffer>> {
+  const img = await loadImage(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = SCREEN_W;
+  canvas.height = SCREEN_H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no canvas 2d context");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
+  drawFitted(ctx, img, fit);
+  const blob: Blob = await new Promise((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error("JPEG encode failed"))), "image/jpeg", quality),
+  );
+  return new Uint8Array(await blob.arrayBuffer()) as Uint8Array<ArrayBuffer>;
+}
+
 // Decode a raw BGRA frame (LiveView, 1920x1080, stride = width*4, no padding)
 // into a canvas. BGRA -> RGBA, alpha forced opaque.
 export function bgraToCanvas(
