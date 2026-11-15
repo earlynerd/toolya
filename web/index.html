@@ -122,7 +122,6 @@ footer b{color:var(--fg);font-weight:600}
       <p>ADB and root over WebUSB — a shell, the screen, the counters, near-stock tweaks. Nothing to install, no desktop app. Open source.</p>
       <div class="hrow">
         <a class="cta" href="/app">Open the tool <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
-        <span class="note" id="note" hidden></span>
       </div>
     </div>
     <div class="term" aria-hidden="true">
@@ -185,9 +184,6 @@ root
       const chip = document.getElementById("rooted");
       chip.innerHTML = `🔓 <b style="font-weight:600">${n}</b> rooted`;
       chip.hidden = false;
-      const note = document.getElementById("note");
-      note.textContent = `${n} goggles rooted so far.`;
-      note.hidden = false;
     }
   }).catch(() => {});
 

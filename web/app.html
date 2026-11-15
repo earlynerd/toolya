@@ -239,9 +239,8 @@ footer b{color:var(--fg);font-weight:600}
 }
 .dpad{display:grid;gap:6px;width:max-content;
   grid-template-columns:repeat(3,52px);
-  grid-template-areas:". up ." "left ok right" ". down ." "back back backl"}
+  grid-template-areas:". up ." "left ok right" ". down ." "back back back" "backl backl backl"}
 .dpad .btn{width:100%;justify-content:center;padding:0}
-.dpad #inp-back,.dpad #inp-back-long{width:auto}
 </style>
 </head>
 <body>
@@ -332,7 +331,6 @@ footer b{color:var(--fg);font-weight:600}
           <button class="btn sm" id="inp-back" type="button" disabled style="grid-area:back">BACK</button>
           <button class="btn sm" id="inp-back-long" type="button" disabled style="grid-area:backl">BACK long</button>
         </div>
-        <p class="hint" style="margin:8px 0 0">BACK/OK are confirmed; joystick arrows are unconfirmed (codes need <code>getevent</code> on hardware). CLI: <code>toolya input key OK</code> · scripting: <code>sendKey</code>/<code>holdKey</code> in <code>src/input.ts</code>.</p>
       </section>
 
       <a class="card natlink" id="to-natartos" href="/natartos">
