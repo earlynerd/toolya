@@ -5,6 +5,9 @@
 export interface Env {
   ASSETS: Fetcher;
   AE: AnalyticsEngineDataset;
+  // Durable rooted-device set: one key "d:<cid>" per device that reached
+  // connect_ok. Exact and survives redeploys (unlike the sampled AE count).
+  KV?: KVNamespace;
   // optional: a CF API token with "Account Analytics: Read" to power /api/rooted.
   // Set with:  wrangler secret put ANALYTICS_TOKEN
   ANALYTICS_TOKEN?: string;
@@ -29,7 +32,7 @@ const CSP = [
   "base-uri 'none'",
   "object-src 'none'",
   "frame-ancestors 'none'",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "font-src https://fonts.gstatic.com",
   "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
@@ -81,6 +84,21 @@ async function hashNid(ip: string, salt: string): Promise<string> {
 // Estimated count of successful roots (connect_ok) over the Analytics Engine
 // retention window. Needs ANALYTICS_TOKEN; returns null if unavailable.
 async function rootedCount(env: Env): Promise<number | null> {
+  // Durable, exact count: number of "d:<cid>" keys in KV (one per rooted device).
+  if (env.KV) {
+    try {
+      let count = 0;
+      let cursor: string | undefined;
+      do {
+        const r = await env.KV.list({ prefix: "d:", cursor });
+        count += r.keys.length;
+        cursor = r.list_complete ? undefined : r.cursor;
+      } while (cursor);
+      return count;
+    } catch {
+      /* fall back to the AE estimate below */
+    }
+  }
   if (!env.ANALYTICS_TOKEN || !env.CF_ACCOUNT_ID) return null;
   try {
     const r = await fetch(
@@ -160,6 +178,10 @@ export default {
             blobs: [ev, clamp(b.os, 12), clamp(b.browser, 12), clamp(b.stage, 24), clamp(b.reason, 24), cid, country, nid, ref],
             doubles: [1, t],
           });
+        }
+        // Durable rooted set: record the device on a successful connect.
+        if (ev === "connect_ok" && env.KV && cid.length >= 8) {
+          ctx.waitUntil(env.KV.put("d:" + cid, "1"));
         }
       } catch {
         /* ignore malformed beacons */

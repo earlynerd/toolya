@@ -24,6 +24,11 @@ run_worker_first = true
 DRY_RUN = "false"
 # CF_ACCOUNT_ID: wrangler secret (not in vars — it's the account id for the AE SQL API)
 
+# durable rooted-device counter (one key "d:<cid>" per device; exact, survives redeploy)
+[[kv_namespaces]]
+binding = "KV"
+id = "76a25f8e03dd41998c377ad430469560"
+
 # per-IP rate limit for the anonymous stat beacon (deters count inflation)
 [[unsafe.bindings]]
 name = "STAT_RL"
