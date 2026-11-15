@@ -170,6 +170,13 @@ export async function installFromRelease(
   const removes = (manifest.remove ?? []).map(vendorPath);
 
   // 4. apply (all interpolated values validated + single-quoted)
+  // SELinux must be permissive before touching /vendor — on a fresh (enforcing)
+  // device the remount and the writes under /vendor are denied otherwise.
+  const sel = await getSelinux(adb);
+  if (!sel.toLowerCase().startsWith("perm")) {
+    log("SELinux is enforcing — switching to permissive…");
+    await setSelinux(adb, "permissive");
+  }
   log("remounting /vendor rw…");
   await run(adb, "mount -o remount,rw /vendor");
   await run(adb, `mkdir -p ${shq(nc.stock_dir)}`);
@@ -253,7 +260,11 @@ export async function startMods(
   // and dies with it, leaving init to respawn a STOCK dji_glasses (no mods).
   // setsid detaches it into its own session so it survives the drop (parity
   // with the CLI `cmd_start`).
-  await run(adb, `setsid sh ${shq(injectPath)} </dev/null >/dev/null 2>&1 &`);
+  // Keep the adb shell alive briefly after backgrounding: if it exits the instant
+  // it forks, adbd tears the exec down and kills the child before setsid detaches
+  // it into its own session — inject.sh never runs. The trailing sleep lets the
+  // detach finish first.
+  await run(adb, `setsid sh ${shq(injectPath)} </dev/null >/dev/null 2>&1 & sleep 2`);
 
   log("waiting for startup (USB may reconnect)…");
   await new Promise((r) => setTimeout(r, 12000));
@@ -276,6 +287,55 @@ export async function startMods(
     throw new Error("inject.sh ran but no mods are loaded — check status / log");
   }
   log(loaded && loaded !== "0" ? "mods started — loader mapped" : "mods started — reconnect and Refresh to confirm");
+}
+
+/** Uninstall natartos: restore stock originals + remove all natartos files.
+ *  Mirrors the CLI `toolya natartos uninstall`. A reboot returns to fully stock. */
+export async function uninstallNatartos(adb: Adb, log: (s: string) => void): Promise<void> {
+  const { natartos: nc } = await getContract();
+  const sel = await getSelinux(adb);
+  if (!sel.toLowerCase().startsWith("perm")) {
+    log("SELinux is enforcing — switching to permissive…");
+    await setSelinux(adb, "permissive");
+  }
+  await run(adb, "mount -o remount,rw /vendor");
+
+  // Read the applied manifest to restore the exact backed-up files.
+  let applied: Manifest | null = null;
+  try { applied = JSON.parse((await run(adb, `cat ${nc.manifest_device} 2>/dev/null`)).trim()) as Manifest; }
+  catch { /* fall back to convention */ }
+
+  log("restoring stock originals…");
+  const backups = (applied?.backup ?? ["/vendor/etc/init/dji_glasses_custom.rc", "/vendor/etc/selinux/precompiled_sepolicy"]).slice();
+  if (applied?.init_rc) backups.push(applied.init_rc.device_path);
+  for (const path of backups) {
+    const base = path.split("/").pop()!;
+    const orig = `${nc.stock_dir}/${base}.orig`;
+    const has = (await run(adb, `[ -f ${shq(orig)} ] && echo yes || echo no`)).trim();
+    if (has === "yes") {
+      await run(adb, `cp ${shq(orig)} ${shq(path)}`);
+      log(`  restored ${base}`);
+    }
+  }
+
+  log("removing natartos…");
+  // Stop the inject supervisor so it can't respawn dji_glasses with the loader.
+  await run(adb, "[ -f /data/local/tmp/natartos_inject.pid ] && kill $(cat /data/local/tmp/natartos_inject.pid) 2>/dev/null; true");
+  await run(adb, "rm -rf /vendor/natartos");
+  await run(adb, "rm -f /vendor/etc/init/persist_adb.rc");
+  await run(adb, `rm -f ${nc.bootcount} ${nc.status} ${nc.disabled}`);
+  await run(adb, "rm -f /data/.natartos_* /data/local/tmp/fb_* /data/local/tmp/natartos* /data/local/tmp/vidplane /data/local/tmp/screencap.bin 2>/dev/null; sync");
+  log("natartos removed — reboot the goggles to return to fully stock.");
+}
+
+/** Enable or disable one installed mod by touching/removing its enabled/ flag.
+ *  Takes effect when mods are next (re)started. */
+export async function setModEnabled(adb: Adb, file: string, on: boolean): Promise<void> {
+  if (!/^[A-Za-z0-9._-]+\.so$/.test(file)) throw new Error(`invalid mod file: ${file}`);
+  await run(adb, "mount -o remount,rw /vendor");
+  const flag = shq(`/vendor/natartos/enabled/${file}`);
+  if (on) await run(adb, `touch ${flag}`);
+  else await run(adb, `rm -f ${flag}`);
 }
 
 const FREEDOOM_ZIP = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip";

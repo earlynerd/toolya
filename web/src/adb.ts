@@ -59,7 +59,11 @@ export async function pushFile(adb: Adb, path: string, bytes: Uint8Array): Promi
 export async function connectAdb(): Promise<Adb> {
   const mgr = AdbDaemonWebUsbDeviceManager.BROWSER;
   if (!mgr) throw new Error("WebUSB not available in this browser");
-  const device = await mgr.requestDevice();
+  // Prefer an already-granted device (no user gesture) so auto-connect right
+  // after "ADB already enabled" works — the device was granted during enable.
+  // Fall back to the picker (needs a click) when none is granted yet.
+  let device = (await mgr.getDevices())[0];
+  if (!device) device = await mgr.requestDevice();
   if (!device) throw new Error("no device selected");
   const connection = await device.connect();
   const credentialStore = new AdbWebCredentialStore("toolya");

@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
-import { fetchLatestRelease, loadManifest, installFromRelease, startMods, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
+import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
 import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile, BG_PATH } from "./adb";
 import { toScreenBmp, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
@@ -163,10 +163,10 @@ function friendlyError(e: unknown): string {
   const name = err?.name ?? "";
   const msg = err?.message ?? String(e);
   if (name === "NotFoundError" || /no device (selected|found|chosen)/i.test(msg))
-    return "No goggles selected. Plug them in and pick the device in the browser prompt.";
+    return "No goggles selected. Plug them in and pick the device in the browser prompt, or try reconnecting.";
   if (/claim|in ?use|access denied|busy/i.test(msg))
     return "Couldn't claim the USB interface. Close any running adb server; on Windows install the WinUSB driver (Zadig).";
-  if (name === "SecurityError" || /secure context|permission|denied/i.test(msg))
+  if (name === "SecurityError" || /secure context|not allowed in this context/i.test(msg))
     return "Blocked by the browser. Use Chrome/Edge over https or http://localhost.";
   if (/unauthor|auth|rejected|credential/i.test(msg))
     return "The goggles rejected the connection. Try reconnecting; the device may need re-pairing.";
@@ -463,7 +463,8 @@ async function refreshNatartos() {
       // enabled ones highlighted, plus a count line.
       const parsed = s.mods.map((m) => {
         const on = / \(enabled\)$/.test(m);
-        return { name: m.replace(/ \(enabled\)$/, "").replace(/\.so$/, ""), on };
+        const file = m.replace(/ \(enabled\)$/, "");
+        return { file, name: file.replace(/\.so$/, ""), on };
       });
       const enabled = parsed.filter((p) => p.on).length;
       $("nat-mods-count").textContent = "";
@@ -476,15 +477,25 @@ async function refreshNatartos() {
       const list = $("nat-mods-list");
       list.replaceChildren();
       for (const p of parsed) {
-        const chip = document.createElement("span");
+        // Clickable: tap toggles the enabled/ flag; a Restart applies it.
+        const chip = document.createElement("button");
+        chip.type = "button";
         chip.className = p.on ? "modchip on" : "modchip";
         chip.textContent = p.name; // textContent — never innerHTML
+        chip.title = p.on ? "enabled — tap to disable" : "disabled — tap to enable";
+        chip.addEventListener("click", () => void toggleMod(p.file, !p.on));
         list.appendChild(chip);
       }
       modsEl.hidden = false;
+      $("nat-mods-hint").hidden = false;
     } else {
       modsEl.hidden = true;
+      $("nat-mods-hint").hidden = true;
     }
+    // Uninstall is only meaningful once natartos is on the device.
+    const unin = $("nat-uninstall");
+    unin.hidden = !s.installed;
+    btn("nat-uninstall", !s.installed);
     // Don't offer "Start" when mods are already running — relabel to Restart.
     $("nat-start").textContent = s.running ? "Restart" : "Start";
   } catch (e) {
@@ -493,7 +504,33 @@ async function refreshNatartos() {
     log("natartos status: " + friendlyError(e));
   }
 }
+async function toggleMod(file: string, on: boolean) {
+  if (!adb) return;
+  try {
+    await setModEnabled(adb, file, on);
+    showNatBanner(`${file.replace(/\.so$/, "")} ${on ? "enabled" : "disabled"} — press Restart to apply.`, "busy");
+    await refreshNatartos();
+  } catch (e) {
+    reportAdbError("toggle mod", e);
+  }
+}
 $("nat-refresh").addEventListener("click", () => void refreshNatartos());
+$("nat-uninstall").addEventListener("click", async () => {
+  if (!adb) return;
+  if (!confirm("Uninstall natartos? Restores the stock originals and removes all natartos files from /vendor. Reboot the goggles afterwards to return fully to stock.")) return;
+  btn("nat-uninstall", true);
+  showNatBanner("Uninstalling natartos…", "busy");
+  try {
+    await uninstallNatartos(adb, log);
+    await refreshNatartos();
+    showNatBanner("natartos uninstalled — reboot the goggles to return to fully stock.", "ok");
+  } catch (e) {
+    reportAdbError("natartos uninstall", e);
+    showNatBanner("Uninstall hit a problem: " + friendlyError(e), "err");
+  } finally {
+    updateNatInstall();
+  }
+});
 $("nat-safe").addEventListener("change", async (e) => {
   if (!adb) return;
   const on = (e.target as HTMLInputElement).checked;
@@ -593,6 +630,14 @@ $("mod-custom").addEventListener("change", async (e) => {
   $("mod-custom-list").textContent = customMods.length ? `custom: ${customMods.map((c) => c.name).join(", ")} (untrusted)` : "";
   $("mod-picker").hidden = false;
 });
+function showNatBanner(html: string, state: "busy" | "ok" | "err") {
+  const el = $("nat-banner");
+  el.innerHTML = html;
+  el.dataset.state = state;
+  el.hidden = false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
 $("nat-install").addEventListener("click", async () => {
   if (!natRelease || !natManifest) return;
   const modIds = Array.from(
@@ -607,6 +652,7 @@ $("nat-install").addEventListener("click", async () => {
   if (!adb) return;
   btn("nat-install", true);
   log(`installing natartos ${natRelease.tag_name}…`);
+  showNatBanner("Installing natartos… the goggles may blink or briefly reconnect — don't unplug. This takes up to a minute.", "busy");
   try {
     const installedIds = await installFromRelease(adb, natRelease, natManifest, { modIds, custom: customMods }, log);
     // anonymous per-mod telemetry (release mods only; custom mods never reported)
@@ -615,8 +661,10 @@ $("nat-install").addEventListener("click", async () => {
     // mods look "not enabled". Parity with the CLI (`toolya natartos install`).
     await startMods(adb, log);
     void refreshNatartos();
+    showNatBanner(`✓ natartos ${natRelease.tag_name} installed — mods active and reboot-safe.`, "ok");
   } catch (e) {
     reportAdbError("natartos install", e);
+    showNatBanner("Install hit a problem: " + friendlyError(e) + " — see the log on the tool page.", "err");
   } finally {
     updateNatInstall();
   }
