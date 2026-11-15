@@ -674,11 +674,14 @@ $("nat-start").addEventListener("click", async () => {
   if (DRY) { log("demo: would start mods — no real device."); return; }
   if (!adb) return;
   btn("nat-start", true);
+  showNatBanner("Starting mods… the goggles may blink or briefly reconnect — don't unplug.", "busy");
   try {
     await startMods(adb, log);
     void refreshNatartos();
+    showNatBanner("✓ mods started.", "ok");
   } catch (e) {
     reportAdbError("natartos start", e);
+    showNatBanner("Start hit a problem: " + friendlyError(e) + " — see the log on the tool page.", "err");
   } finally {
     btn("nat-start", false);
   }
@@ -878,6 +881,7 @@ $("bg-apply").addEventListener("click", async () => {
   if (!adb || !bgJpeg) return;
   if (!confirm("Set this as the goggles' disconnect background? Needs natartos installed with the Custom Background mod — it will be enabled and mods restarted.")) return;
   btn("bg-apply", true);
+  $("log").scrollIntoView({ behavior: "smooth", block: "center" });
   try {
     await applyBackground(adb, bgJpeg, log);
     log("background applied — shows on the disconnect/idle screen.");
