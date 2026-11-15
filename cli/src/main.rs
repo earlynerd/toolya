@@ -74,6 +74,10 @@ fn main() {
                 Err(e) => { eprintln!("toolya adb: {e}"); exit(1); }
             };
             let serial = goggles.serial().unwrap_or_default();
+            if goggles.adb_mode() {
+                println!("ADB is already enabled — connect directly: `adb devices`");
+                return;
+            }
             match goggles.run_enable(&plan, |msg| eprintln!("  {msg}")) {
                 Ok(()) => {
                     println!("adb enable sent — wait ~5s, then `adb devices`");

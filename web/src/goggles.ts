@@ -83,78 +83,59 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
   await device.open();
   if (device.configuration === null) await device.selectConfiguration(1);
 
-  let port: DumlPort | undefined;
-  for (const p of plan.ports) {
+  // Already rooted: the device exposes the Android ADB interface. Skip enable —
+  // the user just needs to Connect.
+  if (adbAlreadyEnabled(device)) {
+    log("ADB is already enabled — click Connect.");
+    try { await device.close(); } catch { /* ignore */ }
+    return info;
+  }
+
+  // 8-interface DUML mode: the data pipe is a specific interface, and which one
+  // carries DUML differs across firmware builds. Resolve each plan port to the
+  // interface that actually exposes its endpoints, keep all candidates, and let
+  // the handshake pick the live one — claiming the wrong interface (writes land
+  // nowhere, reads stay silent) is how enable breaks on a native client.
+  const pipes = resolvePipes(device, plan.ports);
+  if (!pipes.length) throw new Error("no DUML interface found — firmware USB layout unknown");
+
+  // Pass 1: the pipe whose handshake returns </dji> is the live DUML interface.
+  let live: Pipe | undefined;
+  for (const pipe of pipes) {
     try {
-      await device.claimInterface(p.iface);
-      port = p;
-      break;
+      await device.claimInterface(pipe.iface);
     } catch {
       continue;
     }
-  }
-  if (!port) throw new Error("no DUML interface found — firmware USB layout unknown");
-
-  const dec = new TextDecoder();
-  let blob = "";
-  let gotExpect = false;
-
-  let reading = true;
-  const reader = (async () => {
-    while (reading) {
-      try {
-        const r = await device.transferIn(port!.ep_in, 1024);
-        if (r.data && r.data.byteLength) {
-          blob += dec.decode(new Uint8Array(r.data.buffer), { stream: true });
-          if (blob.includes(plan.expect)) {
-            gotExpect = true;
-            reading = false;
-          }
-        }
-      } catch {
-        break;
-      }
-    }
-  })();
-
-  log("handshake…");
-  for (let i = 0; i < plan.handshake.length; i++) {
-    if (gotExpect) break;
-    try {
-      await device.transferOut(port.ep_out, plan.handshake[i]);
-    } catch {
+    log("handshake…");
+    if (await probeHandshake(device, pipe, plan)) {
+      log(`handshake ok (iface ${pipe.iface})`);
+      live = pipe;
       break;
     }
-    await sleep(i < plan.init_count ? 50 : 60);
+    log(`iface ${pipe.iface}: no </dji>`);
+    try { await device.releaseInterface(pipe.iface); } catch { /* ignore */ }
   }
-  // give the reader a moment to catch the tail
-  for (let i = 0; i < 20 && !gotExpect; i++) await sleep(50);
-  reading = false;
-  void reader;
-  if (!gotExpect) log("handshake: no </dji> (goggles may be asleep) — trying enable anyway…");
-  else log("handshake ok");
 
-  // cmd_id scan: send candidates until the device disconnects (= enabling)
-  await sleep(200);
   let disconnected = false;
-  const onDisc = (e: USBConnectionEvent) => {
-    if (e.device === device) disconnected = true;
-  };
-  navigator.usb.addEventListener("disconnect", onDisc);
-  try {
+  if (live) {
     log("enabling adb (scanning)…");
-    for (const cand of plan.candidates) {
-      if (disconnected) break;
+    disconnected = await probeScan(device, live, plan);
+  } else {
+    // Pass 2: no handshake anywhere — try enabling blind on each pipe.
+    for (const pipe of pipes) {
       try {
-        await device.transferOut(port.ep_out, cand);
+        await device.claimInterface(pipe.iface);
       } catch {
-        disconnected = true; // write failed = device gone = success
+        continue;
+      }
+      log(`enabling adb (scanning iface ${pipe.iface})…`);
+      if (await probeScan(device, pipe, plan)) {
+        disconnected = true;
         break;
       }
-      await sleep(200);
+      try { await device.releaseInterface(pipe.iface); } catch { /* ignore */ }
     }
-  } finally {
-    navigator.usb.removeEventListener("disconnect", onDisc);
   }
 
   try {
@@ -166,7 +147,112 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
   if (disconnected) {
     log("adb enabling — goggles re-enumerate in ~5s. Then click Connect.");
   } else {
-    throw new Error("no cmd_id triggered a re-enumerate — keep the goggles awake and try again.");
+    throw new Error("no </dji> on any DUML interface — goggles not answering DUML");
   }
   return info;
+}
+
+type Pipe = { iface: number; ep_out: number; ep_in: number };
+
+// ADB enabled = the Android ADB interface is present (vendor-specific class
+// 0xff / subclass 0x42 / protocol 0x01). DUML mode has only CDC interfaces.
+function adbAlreadyEnabled(device: USBDevice): boolean {
+  const cfg = device.configuration;
+  if (!cfg) return false;
+  for (const intf of cfg.interfaces) {
+    for (const alt of intf.alternates) {
+      if (alt.interfaceClass === 0xff && alt.interfaceSubclass === 0x42 && alt.interfaceProtocol === 0x01) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Map each plan port to the interface that actually exposes its endpoints,
+// deduped by interface. Falls back to the port's nominal interface number.
+function resolvePipes(device: USBDevice, ports: DumlPort[]): Pipe[] {
+  const pipes: Pipe[] = [];
+  const cfg = device.configuration;
+  for (const p of ports) {
+    let iface: number | undefined;
+    if (cfg) {
+      outer: for (const intf of cfg.interfaces) {
+        for (const alt of intf.alternates) {
+          const outs = new Set(alt.endpoints.filter((e) => e.direction === "out").map((e) => e.endpointNumber));
+          const ins = new Set(alt.endpoints.filter((e) => e.direction === "in").map((e) => e.endpointNumber));
+          if (outs.has(p.ep_out) && ins.has(p.ep_in)) {
+            iface = intf.interfaceNumber;
+            break outer;
+          }
+        }
+      }
+    }
+    const resolved = iface ?? p.iface;
+    if (!pipes.some((q) => q.iface === resolved)) {
+      pipes.push({ iface: resolved, ep_out: p.ep_out, ep_in: p.ep_in });
+    }
+  }
+  return pipes;
+}
+
+// Send the handshake on this pipe; resolve true if </dji> comes back.
+async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<boolean> {
+  const dec = new TextDecoder();
+  let blob = "";
+  let got = false;
+  let reading = true;
+  const reader = (async () => {
+    while (reading) {
+      try {
+        const r = await device.transferIn(pipe.ep_in, 1024);
+        if (r.data && r.data.byteLength) {
+          blob += dec.decode(new Uint8Array(r.data.buffer), { stream: true });
+          if (blob.includes(plan.expect)) {
+            got = true;
+            reading = false;
+          }
+        }
+      } catch {
+        break;
+      }
+    }
+  })();
+  for (let i = 0; i < plan.handshake.length && !got; i++) {
+    try {
+      await device.transferOut(pipe.ep_out, plan.handshake[i]);
+    } catch {
+      break;
+    }
+    await sleep(i < plan.init_count ? 50 : 60);
+  }
+  for (let i = 0; i < 20 && !got; i++) await sleep(50);
+  reading = false;
+  void reader;
+  return got;
+}
+
+// Scan cmd_id candidates on this pipe; resolve true when the device re-enumerates.
+async function probeScan(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<boolean> {
+  await sleep(200);
+  let disconnected = false;
+  const onDisc = (e: USBConnectionEvent) => {
+    if (e.device === device) disconnected = true;
+  };
+  navigator.usb.addEventListener("disconnect", onDisc);
+  try {
+    for (const cand of plan.candidates) {
+      if (disconnected) break;
+      try {
+        await device.transferOut(pipe.ep_out, cand);
+      } catch {
+        disconnected = true; // write failed = device gone = success
+        break;
+      }
+      await sleep(200);
+    }
+  } finally {
+    navigator.usb.removeEventListener("disconnect", onDisc);
+  }
+  return disconnected;
 }
