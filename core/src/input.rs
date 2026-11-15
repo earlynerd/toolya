@@ -28,23 +28,22 @@ pub struct Key {
     pub dev: &'static str,
     pub type_: u16,
     pub code: u16,
-    /// Whether the (dev, code) pair is verified on hardware (getevent), or still
-    /// a best guess to confirm. gpio_keys codes are confirmed; the joystick codes
-    /// are the natartos-doom mapping and must be checked with `getevent` on the G3.
+    /// Whether the (dev, code) pair is verified on hardware (getevent). All
+    /// current keys are confirmed on the G3.
     pub confirmed: bool,
 }
 
-/// The key map. gpio_keys (event0) codes are confirmed; omc_keys (event3)
-/// joystick codes are unconfirmed (verify with getevent on hardware).
+/// The key map. All codes confirmed on hardware via `getevent`:
+/// gpio_keys (event0) buttons and omc_keys (event3) joystick.
 pub const KEYS: &[Key] = &[
-    // event0 — gpio_keys (confirmed)
+    // event0 — gpio_keys
     Key { name: "BACK",  dev: "event0", type_: EV_KEY, code: 158, confirmed: true },
     Key { name: "OK",    dev: "event0", type_: EV_KEY, code: 28,  confirmed: true },
-    // event3 — omc_keys joystick (UNCONFIRMED — doom mapping, verify with getevent)
-    Key { name: "UP",    dev: "event3", type_: EV_KEY, code: 103, confirmed: false },
-    Key { name: "DOWN",  dev: "event3", type_: EV_KEY, code: 108, confirmed: false },
-    Key { name: "LEFT",  dev: "event3", type_: EV_KEY, code: 105, confirmed: false },
-    Key { name: "RIGHT", dev: "event3", type_: EV_KEY, code: 106, confirmed: false },
+    // event3 — omc_keys joystick
+    Key { name: "UP",    dev: "event3", type_: EV_KEY, code: 103, confirmed: true },
+    Key { name: "DOWN",  dev: "event3", type_: EV_KEY, code: 108, confirmed: true },
+    Key { name: "LEFT",  dev: "event3", type_: EV_KEY, code: 105, confirmed: true },
+    Key { name: "RIGHT", dev: "event3", type_: EV_KEY, code: 106, confirmed: true },
 ];
 
 /// Look up a key by name (case-insensitive). ENTER is an alias for OK.
@@ -134,6 +133,6 @@ mod tests {
         let j = map_json();
         assert!(j.starts_with('{') && j.ends_with('}'));
         assert!(j.contains("\"BACK\":{\"dev\":\"event0\",\"type\":1,\"code\":158,\"confirmed\":true}"));
-        assert!(j.contains("\"UP\":{\"dev\":\"event3\",\"type\":1,\"code\":103,\"confirmed\":false}"));
+        assert!(j.contains("\"UP\":{\"dev\":\"event3\",\"type\":1,\"code\":103,\"confirmed\":true}"));
     }
 }
