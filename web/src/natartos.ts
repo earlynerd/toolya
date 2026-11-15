@@ -385,6 +385,15 @@ export async function downloadDoomWad(
   log("Doom WAD installed");
 }
 
+/** Ensure a Doom WAD is on the device — download Freedoom if there's none yet.
+ *  Returns true if it downloaded one, false if a WAD was already present. */
+export async function ensureDoomWad(adb: Adb, log: (s: string) => void): Promise<boolean> {
+  const has = (await run(adb, `[ -f ${shq(DOOM_WAD_PATH)} ] && echo y || echo n`)).trim();
+  if (has === "y") return false;
+  await downloadDoomWad(adb, log);
+  return true;
+}
+
 /** Push a user-supplied WAD file to the device. */
 export async function pushDoomWad(
   adb: Adb,

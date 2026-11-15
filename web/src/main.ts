@@ -3,7 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
-import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
+import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, ensureDoomWad, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
 import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile } from "./adb";
 import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
@@ -660,6 +660,16 @@ $("nat-install").addEventListener("click", async () => {
     // Activate now — installing without starting leaves dji_glasses stock, so the
     // mods look "not enabled". Parity with the CLI (`toolya natartos install`).
     await startMods(adb, log);
+    // Doom needs a WAD to launch — fetch Freedoom now so the mod works without a
+    // separate step. Non-fatal: a failed download just means "use Doom → Install".
+    if (installedIds.includes("doom")) {
+      try {
+        showNatBanner("Installing the Doom WAD (Freedoom, ~24 MB)…", "busy");
+        await ensureDoomWad(adb, log);
+      } catch (e) {
+        log("doom WAD: " + friendlyError(e));
+      }
+    }
     void refreshNatartos();
     showNatBanner(`✓ natartos ${natRelease.tag_name} installed — mods active and reboot-safe.`, "ok");
   } catch (e) {
