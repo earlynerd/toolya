@@ -132,6 +132,7 @@ export interface NatartosStatus {
   bootcount: string;
   disabled: boolean;
   mods: string[];
+  running: boolean; // dji_glasses is actually running under the loader
 }
 export async function natartosStatus(adb: Adb): Promise<NatartosStatus> {
   const n = (await getContract()).natartos;
@@ -148,15 +149,21 @@ export async function natartosStatus(adb: Adb): Promise<NatartosStatus> {
     )
   ).trim();
   const disabled = (await run(adb, `[ -f ${n.disabled} ] && echo 1 || echo 0`)).trim() === "1";
-  const installedJson = (await run(adb, `cat /vendor/natartos/installed.json 2>/dev/null`)).trim();
-  let mods: string[] = [];
-  if (installedJson) {
-    try {
-      const j = JSON.parse(installedJson) as { mods?: string[]; custom?: string[] };
-      mods = [...(j.mods ?? []), ...(j.custom ?? [])];
-    } catch { /* malformed → empty */ }
-  }
-  return { installed: version !== "", version, bootcount, disabled, mods };
+  // List mods from the device filesystem — the CLI installs this way and never
+  // writes installed.json (which only the web release-installer would). mods/
+  // holds the installed .so, enabled/ a touch-flag per loaded one.
+  const base = (p: string) => p.split("/").pop() ?? p;
+  const lines = (s: string) => s.split("\n").map((l) => l.trim()).filter(Boolean).map(base);
+  const installedSo = lines(await run(adb, `find /vendor/natartos/mods/ -name '*.so' 2>/dev/null`));
+  const enabledSo = new Set(lines(await run(adb, `find /vendor/natartos/enabled/ -name '*.so' 2>/dev/null`)));
+  const mods = installedSo.map((so) => (enabledSo.has(so) ? `${so} (enabled)` : so));
+  // Mods are "running" only if the loader is actually mapped into dji_glasses —
+  // enabled markers on disk don't mean the live process picked them up.
+  const loaderMapped = (
+    await run(adb, `grep -c natartos_loader /proc/$(pidof dji_glasses)/maps 2>/dev/null`)
+  ).trim();
+  const running = loaderMapped !== "" && loaderMapped !== "0";
+  return { installed: version !== "", version, bootcount, disabled, mods, running };
 }
 /** Diagnostic dump for bug reports — mirrors `toolya natartos dump`. */
 export async function natartosDump(adb: Adb): Promise<string> {

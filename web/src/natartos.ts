@@ -217,7 +217,7 @@ export async function installFromRelease(
   await run(adb, `rm -f ${nc.bootcount} ${nc.status} ${nc.disabled}`);
   await run(adb, "sync");
 
-  log(`natartos ${manifest.natartos_version ?? ""} installed (${chosen.length + customPlan.length} mod(s)) — click Start to activate.`);
+  log(`natartos ${manifest.natartos_version ?? ""} installed (${chosen.length + customPlan.length} mod(s)) — activating…`);
   return chosen.map((m) => m.id);
 }
 
@@ -238,19 +238,44 @@ export async function startMods(
   }
 
   log("starting mods…");
+  // Clear the loader log and any stale overlay flags / supervisor pid left by a
+  // previous session — a leftover fb_stop sends the overlay into a
+  // cleanup→restart loop, so dji_glasses never settles with the mods up.
   await run(adb, `rm -f ${nc.log}`);
+  await run(
+    adb,
+    "rm -f /data/local/tmp/fb_stop /data/local/tmp/fb_override /data/local/tmp/natartos_restart /data/local/tmp/natartos_inject.pid",
+  );
   await run(adb, "sync && echo 3 > /proc/sys/vm/drop_caches");
 
-  // inject.sh stops dji_glasses internally (which drops USB briefly),
-  // so launch it in background — the web ADB session may disconnect.
-  await run(adb, `nohup sh ${shq(injectPath)} > /dev/null 2>&1 &`);
+  // inject.sh stops dji_glasses, which re-enumerates USB and kills this ADB
+  // shell. nohup is not enough — the child stays in the shell's process group
+  // and dies with it, leaving init to respawn a STOCK dji_glasses (no mods).
+  // setsid detaches it into its own session so it survives the drop (parity
+  // with the CLI `cmd_start`).
+  await run(adb, `setsid sh ${shq(injectPath)} </dev/null >/dev/null 2>&1 &`);
 
   log("waiting for startup (USB may reconnect)…");
   await new Promise((r) => setTimeout(r, 12000));
 
   const logText = (await run(adb, `cat ${nc.log} 2>/dev/null`)).trim();
   if (logText) log(logText);
-  log("mods started");
+
+  // Verify dji_glasses actually re-spawned under the loader. Stopping it
+  // re-enumerates USB, so the read may fail on a dropped handle — only a clear
+  // "0 mapped" is treated as failure; an unreadable handle asks for a reconnect.
+  let loaded = "";
+  try {
+    loaded = (
+      await run(adb, `cat /proc/$(pidof dji_glasses)/maps 2>/dev/null | grep -c natartos_loader`)
+    ).trim();
+  } catch {
+    /* USB likely re-enumerated — can't confirm from here */
+  }
+  if (loaded === "0") {
+    throw new Error("inject.sh ran but no mods are loaded — check status / log");
+  }
+  log(loaded && loaded !== "0" ? "mods started — loader mapped" : "mods started — reconnect and Refresh to confirm");
 }
 
 const FREEDOOM_ZIP = "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip";
