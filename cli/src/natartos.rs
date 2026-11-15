@@ -3,7 +3,7 @@
 //! installer for it; natartos itself lives in its own repo (grom-labs/natartos).
 //!
 //! toolya is a generic installer: it never hardcodes natartos's on-device layout.
-//! Every natartos release ships a `manifest.json` (schema in docs/natartos-manifest.md)
+//! Every natartos release ships a `manifest.json`
 //! describing what to place where, with a sha256 per artifact. This module fetches the
 //! manifest + artifacts (from a GitHub release, or a --local dir), verifies hashes, and
 //! applies it over adb.
@@ -41,7 +41,7 @@ const STATUS_PATH: &str = NC::STATUS;
 const DISABLED_PATH: &str = NC::DISABLED;
 const LOG_PATH: &str = NC::LOG;
 
-// --- manifest (contract: docs/natartos-manifest.md) ---
+// --- manifest ---
 
 #[derive(Deserialize)]
 struct Manifest {

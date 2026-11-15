@@ -1,5 +1,5 @@
 // WebUSB install of the natartos mod framework — mirrors the CLI (toolya natartos
-// install). Manifest-driven (docs/natartos-manifest.md), sha256-verified before any
+// install). Manifest-driven, sha256-verified before any
 // device write. Release assets are fetched through the same-origin Worker proxy
 // (/api/dl) because GitHub asset downloads don't send CORS headers.
 //

@@ -1,7 +1,7 @@
 // No-root viewer.
 //
 // DJI Goggles 3 do NOT expose a UVC webcam over USB, so a browser can't grab
-// their feed directly (see docs/unrooted-video.md). What a browser CAN do is
+// their feed directly. What a browser CAN do is
 // show any video input the OS already exposes as a camera — including a virtual
 // camera (OBS Virtual Camera / a bridge app) fed by the goggles' USB-network
 // stream. This module is that last-mile viewer: pick a camera, play it, go
