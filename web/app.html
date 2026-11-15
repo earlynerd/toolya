@@ -408,13 +408,12 @@ footer b{color:var(--fg);font-weight:600}
             <summary>Screen · live monitor <span class="state" id="scr-fps"></span></summary>
             <div class="details-body">
               <div class="row">
-                <input class="field" id="scr-path" value="/data/local/tmp/screencap.bin" aria-label="frame path" autocomplete="off" spellcheck="false">
                 <button class="btn" id="scr-grab" type="button" disabled>Grab frame</button>
                 <label class="switch"><input type="checkbox" id="scr-auto" role="switch"> stream</label>
                 <button class="btn sm push" id="scr-fs" type="button">⛶ Fullscreen</button>
               </div>
               <canvas class="wide" id="scr-canvas" width="640" height="360" role="img" aria-label="Goggles screen mirror"></canvas>
-              <p class="hint">Live BGRA 1920×1080 over adb. With natartos <b>display hook</b> installed → fb_shared mode (faster, no trigger). Without → screencap trigger mode (~2-3 fps).</p>
+              <p class="hint">Live mirror of the goggles screen over adb (~2-3 fps — each frame is a full 8&nbsp;MB capture).</p>
             </div>
           </details>
           <details class="card">
@@ -429,6 +428,7 @@ footer b{color:var(--fg);font-weight:600}
                 <button class="btn" id="bg-download" type="button" disabled>Download .bmp</button>
                 <button class="btn tonal" id="bg-apply" type="button" disabled>Apply</button>
               </div>
+              <p id="bg-err" role="alert" hidden style="color:var(--err);margin:6px 0 0;font-size:13px"></p>
               <p class="hint">Writes <code>/data/screendesk_1920.bmp</code>, shown via the natartos <b>display mod</b>.</p>
             </div>
           </details>
@@ -443,6 +443,13 @@ footer b{color:var(--fg);font-weight:600}
                 <label style="font-size:12px;display:flex;align-items:center;gap:6px">
                   FPS <input type="range" id="ps-fps" min="5" max="60" value="30" style="width:60px">
                   <span id="ps-fpsval" style="min-width:20px">30</span>
+                </label>
+                <label style="font-size:12px;display:flex;align-items:center;gap:6px">
+                  Resolution <select class="field" id="ps-res" style="width:auto">
+                    <option value="480">480p (fastest)</option>
+                    <option value="720" selected>720p</option>
+                    <option value="1080">1080p (sharpest)</option>
+                  </select>
                 </label>
               </div>
               <canvas class="wide" id="ps-preview" width="640" height="360" role="img" aria-label="PC stream preview" style="background:#000"></canvas>

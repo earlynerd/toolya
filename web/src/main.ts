@@ -246,8 +246,13 @@ $("btn-enable").addEventListener("click", async () => {
   try {
     const info = await enableAdb(log);
     stat("enable_ok");
-    setPrimary("connect");
     if (!isKnownDevice(info)) showUntestedNotice(info);
+    if (info.alreadyEnabled) {
+      // ADB was already on — no re-enumerate to wait for, just connect.
+      await doConnect();
+    } else {
+      setPrimary("connect");
+    }
   } catch (e) {
     stat("enable_fail", { stage: classifyErr(e) });
     log("enable: " + friendlyError(e));
@@ -267,7 +272,7 @@ function showUntestedNotice(info: { productName: string; productId: number }) {
   }, { once: true });
 }
 
-$("btn-connect").addEventListener("click", async () => {
+async function doConnect() {
   if (DRY) {
     fakeConnect();
     return;
@@ -317,7 +322,8 @@ $("btn-connect").addEventListener("click", async () => {
     log("connect: " + friendlyError(e));
     setStatus("connect failed", "err");
   }
-});
+}
+$("btn-connect").addEventListener("click", () => void doConnect());
 
 // Demo-mode connect: paint the connected UI with sample data, no real device.
 function fakeConnect() {
@@ -443,7 +449,9 @@ async function refreshNatartos() {
   if (!adb) return;
   try {
     const s = await natartosStatus(adb);
-    $("nat-status").textContent = s.installed ? s.version : "not installed";
+    $("nat-status").textContent = s.installed
+      ? `${s.version}${s.running ? " · running" : " · stopped"}`
+      : "not installed";
     $("nat-boot").textContent = s.bootcount;
     ($("nat-safe") as HTMLInputElement).checked = s.disabled;
     const modsEl = $("nat-mods");
@@ -453,6 +461,8 @@ async function refreshNatartos() {
     } else {
       modsEl.hidden = true;
     }
+    // Don't offer "Start" when mods are already running — relabel to Restart.
+    $("nat-start").textContent = s.running ? "Restart" : "Start";
   } catch {
     /* leave as-is */
   }
@@ -575,6 +585,9 @@ $("nat-install").addEventListener("click", async () => {
     const installedIds = await installFromRelease(adb, natRelease, natManifest, { modIds, custom: customMods }, log);
     // anonymous per-mod telemetry (release mods only; custom mods never reported)
     for (const id of installedIds) stat("mod_install", { stage: natRelease.tag_name, reason: id });
+    // Activate now — installing without starting leaves dji_glasses stock, so the
+    // mods look "not enabled". Parity with the CLI (`toolya natartos install`).
+    await startMods(adb, log);
     void refreshNatartos();
   } catch (e) {
     reportAdbError("natartos install", e);
@@ -675,18 +688,18 @@ $("dump-close").addEventListener("click", () => {
 });
 
 // --- screen (LiveView frame grab / live stream over adb) ---
-const scrPath = $("scr-path") as HTMLInputElement;
 const scrFps = $("scr-fps");
 let stream: StreamHandle | null = null;
 
 const FRAME_BYTES = 1920 * 1080 * 4; // 8294400, raw BGRA
+const SCREENCAP_PATH = "/data/local/tmp/screencap.bin"; // where the display hook writes the frame
 
 async function grabScreen() {
   if (!adb) return;
   try {
     await run(adb, "kill -WINCH $(pidof dji_glasses)");
     await new Promise((r) => setTimeout(r, 150));
-    const bytes = await pullFile(adb, scrPath.value.trim());
+    const bytes = await pullFile(adb, SCREENCAP_PATH);
     if (bytes.length !== FRAME_BYTES) {
       let tail = "";
       try {
@@ -751,6 +764,8 @@ async function bgUpdate() {
   if (!f) return;
   $("bg-fname").textContent = f.name;
   const fit = bgFit.value as "cover" | "contain";
+  const err = $("bg-err");
+  err.hidden = true;
   try {
     await previewInto($("bg-preview") as HTMLCanvasElement, f, fit);
     bgBytes = await toScreenBmp(f, fit);
@@ -758,7 +773,18 @@ async function bgUpdate() {
     btn("bg-apply", !adb);
     log(`background ready: ${(bgBytes.length / 1e6).toFixed(1)} MB BMP (1920×1080)`);
   } catch (e) {
-    log("image error: " + (e as Error).message);
+    // Decode failed (usually a HEIC/HEIF phone photo the browser can't read):
+    // reset state so a bad pick can't leave stale bytes / enabled buttons, and
+    // show the reason on the card — the console log is off-screen.
+    bgBytes = null;
+    btn("bg-download", true);
+    btn("bg-apply", true);
+    const m = (e as Error).message;
+    err.textContent = /load image/.test(m)
+      ? "Couldn't read this image — HEIC/HEIF photos aren't supported. Export it as JPG or PNG and try again."
+      : "Couldn't process this image: " + m;
+    err.hidden = false;
+    log("image error: " + m);
   }
 }
 bgFile.addEventListener("change", () => void bgUpdate());
@@ -941,6 +967,7 @@ let pcStream: PcStreamHandle | null = null;
 
 const psQuality = $("ps-quality") as HTMLInputElement;
 const psFpsSlider = $("ps-fps") as HTMLInputElement;
+const psRes = $("ps-res") as HTMLSelectElement;
 const psStats = $("ps-stats");
 
 psQuality.addEventListener("input", () => { $("ps-qval").textContent = psQuality.value + "%"; });
@@ -963,6 +990,7 @@ $("ps-stream").addEventListener("click", async () => {
       adb,
       quality: parseInt(psQuality.value) / 100,
       fpsCap: parseInt(psFpsSlider.value),
+      height: parseInt(psRes.value),
       preview: $("ps-preview") as HTMLCanvasElement,
       onStatus: (info) => {
         psStats.textContent = `${info.fps} fps · ${info.kbps} KB/s · ${info.encMs}ms enc · ${info.dropped} drop`;

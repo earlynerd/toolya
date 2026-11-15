@@ -12,6 +12,9 @@ export interface DeviceInfo {
   vendorId: number;
   productId: number;
   productName: string;
+  // true when ADB was already enabled (no enable sent) — the caller can connect
+  // straight away instead of asking the user to click Connect.
+  alreadyEnabled?: boolean;
 }
 
 // Known DJI Goggles 3 (E3T zv902) USB product IDs in DUML mode.
@@ -86,9 +89,9 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
   // Already rooted: the device exposes the Android ADB interface. Skip enable —
   // the user just needs to Connect.
   if (adbAlreadyEnabled(device)) {
-    log("ADB is already enabled — click Connect.");
+    log("ADB is already enabled — connecting…");
     try { await device.close(); } catch { /* ignore */ }
-    return info;
+    return { ...info, alreadyEnabled: true };
   }
 
   // 8-interface DUML mode: the data pipe is a specific interface, and which one

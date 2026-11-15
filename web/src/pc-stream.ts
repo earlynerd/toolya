@@ -24,6 +24,7 @@ export interface PcStreamOpts {
   adb: Adb;
   quality: number;    // 0.1–0.95
   fpsCap: number;     // 5–60
+  height?: number;    // capture height (720 default); width derived 16:9
   preview: HTMLCanvasElement;
   onStatus?: (info: { fps: number; frames: number; kbps: number; encMs: number; avgKb: number; dropped: number }) => void;
   onError?: (err: string) => void;
@@ -85,8 +86,12 @@ export async function startPcStream(opts: PcStreamOpts): Promise<PcStreamHandle>
   // Capture screen
   let mediaStream: MediaStream;
   try {
+    // Lower capture resolution → cheaper JPEG-encode + ADB transfer; fb_receiver
+    // letterboxes non-1080p input, so the goggles still fill the screen.
+    const capH = opts.height ?? 720;
+    const capW = Math.round((capH * 16) / 9);
     mediaStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60 } },
+      video: { width: { ideal: capW }, height: { ideal: capH }, frameRate: { ideal: opts.fpsCap } },
       audio: false,
     });
   } catch (e) {

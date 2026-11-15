@@ -13,7 +13,6 @@ import { SCREEN_W, SCREEN_H } from "./image";
 import { getContract } from "./wasm";
 
 const FRAME_BYTES = SCREEN_W * SCREEN_H * 4;
-const FB_HEADER = 64;
 const PIXEL_COUNT = SCREEN_W * SCREEN_H;
 const FB_STREAM_PATH = "/data/local/tmp/fb_stream";
 
@@ -62,20 +61,13 @@ export async function startStream(
 ): Promise<StreamHandle> {
   const c = await getContract();
 
-  // Check if fb_shared exists (natartos display hook active)
-  let hasFbShared = false;
-  try {
-    const out = await run(adb, `[ -f ${c.files.fb_shared} ] && stat -c%s ${c.files.fb_shared}`);
-    hasFbShared = parseInt(out.trim()) >= FRAME_BYTES;
-  } catch { /* no fb_shared */ }
-
-  // Try MJPEG mode: push fb_stream binary if needed
+  // The monitor always captures the real UI via the screencap trigger. fb_shared
+  // is the PC-stream INJECT buffer — reading it back shows injected or stale
+  // frames, not the live screen, so it is never a capture source. MJPEG needs a
+  // real on-device encoder (fb_stream) reading the scanout DMA-bufs; until that
+  // binary ships, ensureFbStream fails and we stay on raw.
   let mode: StreamMode = "raw";
-  let hasBinary = false;
-  if (hasFbShared) {
-    hasBinary = await ensureFbStream(adb);
-    if (hasBinary) mode = "mjpeg";
-  }
+  if (await ensureFbStream(adb)) mode = "mjpeg";
 
   const ctx = canvas.getContext("2d")!;
   let running = true;
@@ -145,7 +137,6 @@ export async function startStream(
     const offCtx = offscreen.getContext("2d")!;
     const imgData = offCtx.createImageData(SCREEN_W, SCREEN_H);
     const dst32 = new Uint32Array(imgData.data.buffer);
-    let lastCounter = -1;
 
     function renderRaw(bgra: Uint8Array, offset: number) {
       const src = new Uint32Array(bgra.buffer, bgra.byteOffset + offset, PIXEL_COUNT);
@@ -161,20 +152,11 @@ export async function startStream(
     (async () => {
       while (running) {
         try {
-          if (hasFbShared) {
-            const raw = await pullFile(adb, c.files.fb_shared);
-            if (raw.length < FRAME_BYTES + FB_HEADER) { await sleep(100); continue; }
-            const counter = new DataView(raw.buffer, raw.byteOffset).getUint32(0, true);
-            if (counter === lastCounter) { await sleep(16); continue; }
-            lastCounter = counter;
-            renderRaw(raw, FB_HEADER);
-          } else {
-            await run(adb, c.screen.grab_trigger);
-            await sleep(80);
-            const raw = await pullFile(adb, c.files.screencap);
-            if (raw.length !== FRAME_BYTES) { await sleep(200); continue; }
-            renderRaw(raw, 0);
-          }
+          await run(adb, c.screen.grab_trigger);
+          await sleep(80);
+          const raw = await pullFile(adb, c.files.screencap);
+          if (raw.length !== FRAME_BYTES) { await sleep(200); continue; }
+          renderRaw(raw, 0);
         } catch (e) {
           if (!running) break;
           running = false;
