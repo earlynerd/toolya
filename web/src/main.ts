@@ -222,6 +222,9 @@ function showView(name: "root" | "natartos") {
 function applyRoute(smooth: boolean) {
   const nat = location.pathname.replace(/\/+$/, "") === "/natartos";
   showView(nat ? "natartos" : "root");
+  // Re-read status on entering /natartos (not only at connect) so the mod list
+  // is current even if connect happened earlier or its first read failed.
+  if (nat && adb) void refreshNatartos();
   // natartos: scroll to its section (not the console at top); root: back to top
   if (nat) $("view-natartos").scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" });
   else if (smooth) scrollTo({ top: 0, behavior: "smooth" });
@@ -456,15 +459,38 @@ async function refreshNatartos() {
     ($("nat-safe") as HTMLInputElement).checked = s.disabled;
     const modsEl = $("nat-mods");
     if (s.mods.length > 0) {
-      $("nat-mods-list").textContent = s.mods.join(", ");
+      // Each entry is "<name>.so" or "<name>.so (enabled)". Show as chips with
+      // enabled ones highlighted, plus a count line.
+      const parsed = s.mods.map((m) => {
+        const on = / \(enabled\)$/.test(m);
+        return { name: m.replace(/ \(enabled\)$/, "").replace(/\.so$/, ""), on };
+      });
+      const enabled = parsed.filter((p) => p.on).length;
+      $("nat-mods-count").textContent = "";
+      const total = document.createElement("span");
+      total.textContent = `installed · ${parsed.length}`;
+      const en = document.createElement("span");
+      en.className = "en";
+      en.textContent = `${enabled} enabled`;
+      $("nat-mods-count").append(total, en);
+      const list = $("nat-mods-list");
+      list.replaceChildren();
+      for (const p of parsed) {
+        const chip = document.createElement("span");
+        chip.className = p.on ? "modchip on" : "modchip";
+        chip.textContent = p.name; // textContent — never innerHTML
+        list.appendChild(chip);
+      }
       modsEl.hidden = false;
     } else {
       modsEl.hidden = true;
     }
     // Don't offer "Start" when mods are already running — relabel to Restart.
     $("nat-start").textContent = s.running ? "Restart" : "Start";
-  } catch {
-    /* leave as-is */
+  } catch (e) {
+    // Don't swallow silently — a failed status read is why the mod list can look
+    // empty. Surface it so it's diagnosable instead of a blank panel.
+    log("natartos status: " + friendlyError(e));
   }
 }
 $("nat-refresh").addEventListener("click", () => void refreshNatartos());
