@@ -15,6 +15,9 @@ struct Pipe {
     iface_num: u8,
     ep_out: u8,
     ep_in: u8, // IN address already OR'd with 0x80
+    /// True when this pipe was resolved to an interface that actually exposes
+    /// the wanted DUML endpoints (vs falling back to the plan's nominal iface).
+    matched: bool,
 }
 
 pub struct Goggles {
@@ -22,6 +25,11 @@ pub struct Goggles {
     serial: Option<String>,
     pipes: Vec<Pipe>,
     adb_mode: bool,
+    /// Human-readable interface/endpoint layout, for precise diagnostics.
+    iface_summary: String,
+    /// True when at least one pipe matched real DUML endpoints — i.e. the device
+    /// actually exposes a DUML data interface (a Goggles 3 in DUML mode does).
+    duml_eps_found: bool,
 }
 
 impl Goggles {
@@ -50,26 +58,26 @@ impl Goggles {
         let debug = std::env::var("TOOLYA_USB_DEBUG").is_ok();
         let mut pipes: Vec<Pipe> = Vec::new();
         let mut adb_mode = false;
+        let mut iface_summary = String::new();
         if let Ok(cfg) = dev.active_configuration() {
             // ADB already enabled: the device exposes the Android ADB interface
             // (vendor-specific class 0xff / subclass 0x42 / protocol 0x01). DUML
             // mode has only CDC interfaces, so this cleanly tells the modes apart.
+            // Build the interface/endpoint summary in the same pass, for diagnostics.
             for g in cfg.interfaces() {
                 for alt in g.alt_settings() {
                     if alt.class() == 0xff && alt.subclass() == 0x42 && alt.protocol() == 0x01 {
                         adb_mode = true;
                     }
+                    let eps: Vec<String> = alt.endpoints().map(|e| format!("{:#04x}", e.address())).collect();
+                    if !iface_summary.is_empty() { iface_summary.push_str("; "); }
+                    iface_summary.push_str(&format!(
+                        "iface {} {:#04x}/{:#04x}/{:#04x} eps=[{}]",
+                        alt.interface_number(), alt.class(), alt.subclass(), alt.protocol(), eps.join(",")));
                 }
             }
             if debug {
-                eprintln!("[usb] config {}", cfg.configuration_value());
-                for g in cfg.interfaces() {
-                    for alt in g.alt_settings() {
-                        let eps: Vec<String> = alt.endpoints().map(|e| format!("{:#04x}", e.address())).collect();
-                        eprintln!("[usb] iface {} class={:#04x}/{:#04x}/{:#04x} eps=[{}]",
-                            alt.interface_number(), alt.class(), alt.subclass(), alt.protocol(), eps.join(","));
-                    }
-                }
+                eprintln!("[usb] config {} — {}", cfg.configuration_value(), iface_summary);
             }
             for p in ports {
                 let want_out = p.ep_out;
@@ -89,19 +97,24 @@ impl Goggles {
                         }
                     }
                 }
+                // Did this port resolve to an interface actually exposing its
+                // endpoints? If not, we fall back to the nominal — but a device
+                // where *no* port matches is not a Goggles 3 in DUML mode.
+                let matched = iface_num.is_some();
                 let iface_num = iface_num.unwrap_or(p.iface);
                 if !pipes.iter().any(|q| q.iface_num == iface_num) {
-                    pipes.push(Pipe { iface_num, ep_out: want_out, ep_in: want_in });
+                    pipes.push(Pipe { iface_num, ep_out: want_out, ep_in: want_in, matched });
                 }
             }
         }
         // Fallback when the config could not be read: trust the plan's nominals.
         if pipes.is_empty() {
             for p in ports {
-                pipes.push(Pipe { iface_num: p.iface, ep_out: p.ep_out, ep_in: p.ep_in | 0x80 });
+                pipes.push(Pipe { iface_num: p.iface, ep_out: p.ep_out, ep_in: p.ep_in | 0x80, matched: false });
             }
         }
-        Ok(Self { dev, serial, pipes, adb_mode })
+        let duml_eps_found = pipes.iter().any(|p| p.matched);
+        Ok(Self { dev, serial, pipes, adb_mode, iface_summary, duml_eps_found })
     }
 
     pub fn serial(&self) -> Option<&str> {
@@ -114,35 +127,62 @@ impl Goggles {
         self.adb_mode
     }
 
-    /// Execute the adb-enable plan. Tries each candidate pipe: the one whose
-    /// handshake returns `</dji>` is the live DUML interface, and the cmd_id scan
-    /// runs on it. If none answers, every pipe still gets a blind scan.
+    /// Execute the adb-enable plan. The pipe whose handshake returns `</dji>` is
+    /// the live DUML interface; the WMS cmd_set 0x07 candidate scan runs on it.
+    /// If no pipe answers, report a precise diagnosis instead of firing unknown
+    /// commands at the device.
     pub fn run_enable(&self, plan: &EnablePlan, log: impl Fn(&str)) -> Result<(), String> {
-        // Pass 1: find the pipe that answers the handshake.
+        let mut any_data = false;
+        let mut version: Option<String> = None;
         for pipe in &self.pipes {
             let iface = match self.dev.claim_interface(pipe.iface_num) {
                 Ok(i) => i,
                 Err(_) => continue,
             };
             drain(&iface, pipe.ep_in);
-            if handshake(&iface, pipe, plan) {
+            let blob = handshake(&iface, pipe, plan);
+            if !blob.is_empty() { any_data = true; }
+            if version.is_none() { version = parse_dji_version(&blob); }
+            if contains_subslice(&blob, &plan.expect) {
                 log(&format!("handshake ok (iface {})", pipe.iface_num));
-                return scan(&iface, pipe, plan, &log);
+                if let Some(v) = &version { log(&format!("device: {v}")); }
+                return enable(&iface, pipe, plan, &log);
             }
             log(&format!("iface {}: no </dji>", pipe.iface_num));
         }
-        // Pass 2: no handshake anywhere — try enabling blind on each pipe.
-        for pipe in &self.pipes {
-            let iface = match self.dev.claim_interface(pipe.iface_num) {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
-            drain(&iface, pipe.ep_in);
-            if let Ok(()) = scan(&iface, pipe, plan, &log) {
-                return Ok(());
-            }
+        Err(self.diagnose(any_data, version))
+    }
+
+    /// Turn a failed handshake into a precise message instead of a blanket
+    /// "not answering DUML": separate "wrong/old device" from "wrong pipe" from
+    /// "silent", using the enumerated descriptors and whatever bytes came back.
+    fn diagnose(&self, any_data: bool, version: Option<String>) -> String {
+        if self.adb_mode {
+            return "ADB already enabled (Android ADB interface present) — run `adb devices`".into();
         }
-        Err("no </dji> on any DUML interface and no cmd_id triggered a disconnect — goggles not answering DUML".into())
+        if !self.duml_eps_found {
+            return format!(
+                "no DUML data interface (expected bulk endpoints 0x04/0x85 or 0x01/0x81): [{}]. \
+                 Not a Goggles 3 in DUML mode — older goggles (G2/ZV900) or a non-DUML USB mode \
+                 do not expose the adb-enable handler.",
+                self.iface_summary);
+        }
+        if let Some(v) = version {
+            return format!(
+                "DUML interface answered (device: {v}) but never returned </dji> — adb-enable \
+                 (WMS cmd_set 0x07) may be unsupported on this firmware. [{}]",
+                self.iface_summary);
+        }
+        if any_data {
+            return format!(
+                "DUML interface returned data but no </dji> — wrong pipe or timing, not the \
+                 adb-enable target. [{}]",
+                self.iface_summary);
+        }
+        format!(
+            "goggles silent on every DUML pipe (no bytes back). Check the cable and that the \
+             goggles are in DUML (pre-ADB) mode. [{}]",
+            self.iface_summary)
     }
 }
 
@@ -182,8 +222,10 @@ fn drain(iface: &nusb::Interface, ep_in: u8) {
     }
 }
 
-/// Send the handshake packets on this pipe and return whether `</dji>` came back.
-fn handshake(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan) -> bool {
+/// Send the handshake packets on this pipe and return every byte read back.
+/// Stops early once `</dji>` appears. The caller checks the blob for `</dji>`
+/// and can parse the device version out of it for diagnostics.
+fn handshake(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan) -> Vec<u8> {
     let mut blob = Vec::new();
     for (i, pkt) in plan.handshake.iter().enumerate() {
         if bulk_out(iface, pipe.ep_out, pkt).is_err() { break; }
@@ -191,35 +233,73 @@ fn handshake(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(delay));
         if let In::Data(data) = bulk_in(iface, pipe.ep_in, 65536, HS_MS) {
             blob.extend_from_slice(&data);
-            if contains_subslice(&blob, &plan.expect) { return true; }
+            if contains_subslice(&blob, &plan.expect) { return blob; }
         }
     }
     for _ in 0..20 {
         if let In::Data(data) = bulk_in(iface, pipe.ep_in, 65536, HS_MS) {
             blob.extend_from_slice(&data);
-            if contains_subslice(&blob, &plan.expect) { return true; }
+            if contains_subslice(&blob, &plan.expect) { return blob; }
+        }
+    }
+    blob
+}
+
+/// Enable adb on this (handshake-confirmed) pipe. Primary: one packet with the
+/// empirically-confirmed cmd_id 0x64, waiting ~5s for the re-enumeration. If
+/// that doesn't switch (other firmware), fall back to the full 0x60–0x6F scan.
+fn enable(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan, log: &impl Fn(&str)) -> Result<(), String> {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    drain(iface, pipe.ep_in);
+    let cid = plan.enable[10];
+    log(&format!("enabling adb (cmd_id 0x{cid:02x}, iface {})…", pipe.iface_num));
+    if send_and_wait(iface, pipe, &plan.enable, ENABLE_WAIT_MS, log) {
+        log("adb enabling — goggles re-enumerate in ~5s. Then `adb devices`.");
+        return Ok(());
+    }
+    log(&format!("cmd_id 0x{cid:02x} did not switch — scanning 0x60–0x6F…"));
+    scan(iface, pipe, plan, log)
+}
+
+/// Send one packet and wait up to `wait_ms` for the device to re-enumerate.
+/// Returns true on disconnect (enable took) and logs the winning cmd_id. An ACK
+/// or silence just means "still here" — keep waiting until the deadline.
+fn send_and_wait(iface: &nusb::Interface, pipe: &Pipe, pkt: &[u8], wait_ms: u64, log: &impl Fn(&str)) -> bool {
+    // cmd_id is byte 10 of the framed packet (4-byte frame header + HOST dst seq
+    // ack cmd_set). Log the winner so the real trigger is captured empirically.
+    let cid = pkt[10];
+    if bulk_out(iface, pipe.ep_out, pkt).is_err() {
+        log(&format!("adb enabled by cmd_id 0x{cid:02x}"));
+        return true;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+    while std::time::Instant::now() < deadline {
+        if let In::Closed(_) = bulk_in(iface, pipe.ep_in, 1024, SCAN_MS) {
+            log(&format!("adb enabled by cmd_id 0x{cid:02x}"));
+            return true;
         }
     }
     false
 }
 
-/// Scan cmd_id candidates on this pipe. Ok when the device re-enumerates
-/// (USB disconnect = ADB enabling); Err when the range is exhausted.
+/// Fallback cmd_id scan (0x60–0x6F) for firmwares where the primary differs.
+/// Ok on re-enumeration (logs the winner); Err when the range is exhausted.
 fn scan(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan, log: &impl Fn(&str)) -> Result<(), String> {
-    std::thread::sleep(std::time::Duration::from_millis(200));
     drain(iface, pipe.ep_in);
-    log(&format!("enabling adb (scanning cmd_id on iface {})…", pipe.iface_num));
     for pkt in &plan.candidates {
+        let cid = pkt[10];
         if bulk_out(iface, pipe.ep_out, pkt).is_err() {
+            log(&format!("adb enabled by cmd_id 0x{cid:02x}"));
             log("adb enabling — goggles re-enumerate in ~5s. Then `adb devices`.");
             return Ok(());
         }
         for _ in 0..8 {
             match bulk_in(iface, pipe.ep_in, 1024, SCAN_MS) {
-                In::Data(r) if r.len() >= 11 && r[8] == 0xC0 && r[10] == pkt[10] => break,
+                In::Data(r) if r.len() >= 11 && r[8] == 0xC0 && r[10] == cid => break,
                 In::Data(_) => continue,
                 In::Timeout => break,
                 In::Closed(_) => {
+                    log(&format!("adb enabled by cmd_id 0x{cid:02x}"));
                     log("adb enabling — goggles re-enumerate in ~5s. Then `adb devices`.");
                     return Ok(());
                 }
@@ -228,6 +308,21 @@ fn scan(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan, log: &impl Fn(&
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     Err("no cmd_id triggered USB disconnect".into())
+}
+
+/// Best-effort device/version string from a DUML `</dji>` response, for
+/// diagnostics. Returns the printable ASCII run around the first `dji` marker.
+fn parse_dji_version(blob: &[u8]) -> Option<String> {
+    let pos = blob.windows(3).position(|w| w.eq_ignore_ascii_case(b"dji"))?;
+    let start = blob[..pos].iter().rposition(|&b| b == b'<').map(|i| i + 1).unwrap_or(pos);
+    let s: String = blob[start..]
+        .iter()
+        .take(160)
+        .take_while(|&&b| b != 0)
+        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { ' ' })
+        .collect();
+    let s = s.split("</dji>").next().unwrap_or(&s).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
 }
 
 /// Outcome of a bulk IN: data, a deadline with nothing received, or a real USB
@@ -303,6 +398,9 @@ impl std::future::Future for Delay {
 const DRAIN_MS: u64 = 200;
 const HS_MS: u64 = 300;
 const SCAN_MS: u64 = 150;
+/// How long to wait for the re-enumeration after the primary single enable
+/// packet before falling back to the scan. The success hint says ~5s.
+const ENABLE_WAIT_MS: u64 = 5000;
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)

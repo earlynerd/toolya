@@ -164,7 +164,9 @@ fn main() {
                     let tag = if i < p.init_count { "init" } else { "probe" };
                     println!("  [{tag:>5} {i:>2}] {}", pkt.iter().map(|b| format!("{b:02x}")).collect::<String>());
                 }
-                println!("candidates ({}, scan until USB disconnect):", p.candidates.len());
+                println!("primary enable (cmd_id 0x{:02x}, single packet, ~5s wait):", p.enable[10]);
+                println!("  [0x{:02x}] {}", p.enable[10], p.enable.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                println!("fallback candidates ({}, scan until USB disconnect):", p.candidates.len());
                 for (i, pkt) in p.candidates.iter().enumerate() {
                     println!("  [0x{:02x}] {}", 0x64u8.wrapping_add(i as u8).min(0x6F), pkt.iter().map(|b| format!("{b:02x}")).collect::<String>());
                 }

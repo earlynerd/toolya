@@ -1,7 +1,9 @@
-// Raw-WebUSB adb-enable for DJI Goggles 3. This is NOT a single packet: the
-// device needs a handshake (confirm it's awake, read until `</dji>`), then a
-// cmd_id scan — the enable cmd_id shifts between boots, so we send candidates
-// until the device disconnects (= USB reconfiguring to ADB).
+// Raw-WebUSB adb-enable for DJI Goggles 3. The device first needs a handshake
+// (confirm it's awake, read until `</dji>`), then a cmd_id scan (WMS cmd_set
+// 0x07, cmd_id 0x60–0x6F) on the confirmed pipe until it disconnects (= USB
+// reconfiguring to ADB). The scan is load-bearing: the exact enable cmd_id is
+// not statically isolable and varies across firmware (0x64 on fw 01.00.1600,
+// where 0x65 does nothing), so we send the candidates and log the winner.
 //
 // getEnablePlan() computes the packet plan in the browser via the Rust core
 // (WASM) — no server, no key. The client only sends/reads/detects.
@@ -17,9 +19,10 @@ export interface DeviceInfo {
   alreadyEnabled?: boolean;
 }
 
-// Known DJI Goggles 3 (E3T zv902) USB product IDs in DUML mode.
-// If the device's PID isn't in this set, it's untested.
-const KNOWN_G3_PIDS = new Set([0x001e]);
+// DJI Goggles 3 (E3T zv902) USB product ID. The gadget keeps the same PID in
+// both DUML and ADB modes (0x0020) — the modes differ by interface class, not
+// PID — so a lone PID check can't tell them apart, only identify the model.
+const KNOWN_G3_PIDS = new Set([0x0020]);
 const G3_NAME_PATTERN = /goggles\s*3|zv902|e3t/i;
 
 export function isKnownDevice(d: DeviceInfo): boolean {
@@ -35,6 +38,12 @@ interface DumlPort {
 interface EnablePlan {
   handshake: Uint8Array<ArrayBuffer>[];
   init_count: number;
+  // Primary adb-enable packet: cmd_id 0x64, empirically confirmed on fw
+  // 01.00.1600. Sent first (one packet, long wait); the scan is the fallback.
+  enable: Uint8Array<ArrayBuffer>;
+  // WMS adb-enable candidates (cmd_set 0x07, cmd_id 0x60–0x6F). Fallback scan for
+  // firmwares where the enable cmd_id differs; the cmd_id is not statically
+  // isolable, so the winner is logged at runtime.
   candidates: Uint8Array<ArrayBuffer>[];
   expect: string;
   ports: DumlPort[];
@@ -55,6 +64,7 @@ async function getEnablePlan(): Promise<EnablePlan> {
   const p = JSON.parse(json) as {
     handshake: string[];
     init_count: number;
+    enable: string;
     candidates: string[];
     expect: string;
     ports: { iface: number; ep_out: number; ep_in: number }[];
@@ -62,6 +72,7 @@ async function getEnablePlan(): Promise<EnablePlan> {
   return {
     handshake: p.handshake.map(hexToBytes),
     init_count: p.init_count,
+    enable: hexToBytes(p.enable),
     candidates: p.candidates.map(hexToBytes),
     expect: p.expect,
     ports: p.ports,
@@ -96,14 +107,17 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
 
   // 8-interface DUML mode: the data pipe is a specific interface, and which one
   // carries DUML differs across firmware builds. Resolve each plan port to the
-  // interface that actually exposes its endpoints, keep all candidates, and let
-  // the handshake pick the live one — claiming the wrong interface (writes land
-  // nowhere, reads stay silent) is how enable breaks on a native client.
+  // interface that actually exposes its endpoints, keep all candidate pipes, and
+  // let the handshake pick the live one — claiming the wrong interface (writes
+  // land nowhere, reads stay silent) is how enable breaks on a native client.
   const pipes = resolvePipes(device, plan.ports);
   if (!pipes.length) throw new Error("no DUML interface found — firmware USB layout unknown");
 
-  // Pass 1: the pipe whose handshake returns </dji> is the live DUML interface.
+  // The pipe whose handshake returns </dji> is the live DUML interface. Collect
+  // diagnostics along the way so a failure can say *why*, not just "no </dji>".
   let live: Pipe | undefined;
+  let anyData = false;
+  let version: string | undefined;
   for (const pipe of pipes) {
     try {
       await device.claimInterface(pipe.iface);
@@ -111,8 +125,12 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
       continue;
     }
     log("handshake…");
-    if (await probeHandshake(device, pipe, plan)) {
+    const blob = await probeHandshake(device, pipe, plan);
+    if (blob.length) anyData = true;
+    if (!version) version = parseDjiVersion(blob);
+    if (blob.includes(plan.expect)) {
       log(`handshake ok (iface ${pipe.iface})`);
+      if (version) log(`device: ${version}`);
       live = pipe;
       break;
     }
@@ -120,24 +138,17 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
     try { await device.releaseInterface(pipe.iface); } catch { /* ignore */ }
   }
 
+  // No blind pass: only the live DUML pipe gets the scan. A device that never
+  // answered DUML gets a precise diagnosis, not unknown commands fired at it.
   let disconnected = false;
   if (live) {
-    log("enabling adb (scanning)…");
-    disconnected = await probeScan(device, live, plan);
-  } else {
-    // Pass 2: no handshake anywhere — try enabling blind on each pipe.
-    for (const pipe of pipes) {
-      try {
-        await device.claimInterface(pipe.iface);
-      } catch {
-        continue;
-      }
-      log(`enabling adb (scanning iface ${pipe.iface})…`);
-      if (await probeScan(device, pipe, plan)) {
-        disconnected = true;
-        break;
-      }
-      try { await device.releaseInterface(pipe.iface); } catch { /* ignore */ }
+    // Primary: one packet (cmd_id 0x64), long wait for re-enumeration.
+    const cid = "0x" + plan.enable[10].toString(16).padStart(2, "0");
+    log(`enabling adb (cmd_id ${cid})…`);
+    disconnected = await probeSingle(device, live, plan.enable, 5000, log);
+    if (!disconnected) {
+      log(`cmd_id ${cid} did not switch — scanning 0x60–0x6F…`);
+      disconnected = await probeScan(device, live, plan, log);
     }
   }
 
@@ -149,10 +160,79 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
 
   if (disconnected) {
     log("adb enabling — goggles re-enumerate in ~5s. Then click Connect.");
+  } else if (live) {
+    throw new Error("scan exhausted on the DUML interface — no cmd_id triggered a disconnect");
   } else {
-    throw new Error("no </dji> on any DUML interface — goggles not answering DUML");
+    throw new Error(diagnose(device, plan, anyData, version));
   }
   return info;
+}
+
+// Turn a failed handshake into a precise message: separate "wrong/old device"
+// from "wrong pipe" from "silent", using the descriptors and the bytes seen.
+function diagnose(device: USBDevice, plan: EnablePlan, anyData: boolean, version?: string): string {
+  if (adbAlreadyEnabled(device)) return "ADB already enabled — just connect";
+  if (!dumlEpsFound(device, plan.ports)) {
+    return `no DUML data interface (expected the plan's bulk endpoints): [${interfaceSummary(device)}]. ` +
+      `Not a Goggles 3 in DUML mode — older goggles (G2/ZV900) or a non-DUML USB mode ` +
+      `do not expose the adb-enable handler.`;
+  }
+  if (version) {
+    return `DUML interface answered (device: ${version}) but never returned </dji> — ` +
+      `adb-enable (WMS cmd_set 0x07) may be unsupported on this firmware. [${interfaceSummary(device)}]`;
+  }
+  if (anyData) {
+    return `DUML interface returned data but no </dji> — wrong pipe or timing. [${interfaceSummary(device)}]`;
+  }
+  return `goggles silent on every DUML pipe. Check the cable and that the goggles are in ` +
+    `DUML (pre-ADB) mode. [${interfaceSummary(device)}]`;
+}
+
+// Human-readable interface/endpoint layout, for diagnostics.
+function interfaceSummary(device: USBDevice): string {
+  const cfg = device.configuration;
+  if (!cfg) return "no configuration";
+  const hx = (n: number) => "0x" + n.toString(16).padStart(2, "0");
+  const parts: string[] = [];
+  for (const intf of cfg.interfaces) {
+    for (const alt of intf.alternates) {
+      const eps = alt.endpoints.map((e) => `${e.direction}${e.endpointNumber}`).join(",");
+      parts.push(
+        `iface ${intf.interfaceNumber} ${hx(alt.interfaceClass)}/${hx(alt.interfaceSubclass)}/${hx(alt.interfaceProtocol)} eps=[${eps}]`,
+      );
+    }
+  }
+  return parts.join("; ");
+}
+
+// True when the device actually exposes a plan DUML data interface (matching
+// bulk endpoints) — a Goggles 3 in DUML mode does; other devices do not.
+function dumlEpsFound(device: USBDevice, ports: DumlPort[]): boolean {
+  const cfg = device.configuration;
+  if (!cfg) return false;
+  for (const p of ports) {
+    for (const intf of cfg.interfaces) {
+      for (const alt of intf.alternates) {
+        const outs = new Set(alt.endpoints.filter((e) => e.direction === "out").map((e) => e.endpointNumber));
+        const ins = new Set(alt.endpoints.filter((e) => e.direction === "in").map((e) => e.endpointNumber));
+        if (outs.has(p.ep_out) && ins.has(p.ep_in)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Best-effort device/version string from a DUML </dji> response, for diagnostics.
+function parseDjiVersion(blob: string): string | undefined {
+  const i = blob.toLowerCase().indexOf("dji");
+  if (i < 0) return undefined;
+  const lt = blob.lastIndexOf("<", i);
+  const start = lt >= 0 ? lt + 1 : i;
+  let s = blob.slice(start, start + 160);
+  const end = s.indexOf("</dji>");
+  if (end >= 0) s = s.slice(0, end);
+  s = s.replace(/[^\x20-\x7e]+/g, " ").trim();
+  return s || undefined;
 }
 
 type Pipe = { iface: number; ep_out: number; ep_in: number };
@@ -199,11 +279,13 @@ function resolvePipes(device: USBDevice, ports: DumlPort[]): Pipe[] {
   return pipes;
 }
 
-// Send the handshake on this pipe; resolve true if </dji> comes back.
-async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<boolean> {
+// Send the handshake on this pipe; resolve with every byte read back (decoded).
+// Stops early once </dji> appears. The caller checks for </dji> and can parse
+// the device version from the blob.
+async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<string> {
   const dec = new TextDecoder();
   let blob = "";
-  let got = false;
+  let done = false;
   let reading = true;
   const reader = (async () => {
     while (reading) {
@@ -212,7 +294,7 @@ async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): 
         if (r.data && r.data.byteLength) {
           blob += dec.decode(new Uint8Array(r.data.buffer), { stream: true });
           if (blob.includes(plan.expect)) {
-            got = true;
+            done = true;
             reading = false;
           }
         }
@@ -221,7 +303,7 @@ async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): 
       }
     }
   })();
-  for (let i = 0; i < plan.handshake.length && !got; i++) {
+  for (let i = 0; i < plan.handshake.length && !done; i++) {
     try {
       await device.transferOut(pipe.ep_out, plan.handshake[i]);
     } catch {
@@ -229,14 +311,47 @@ async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): 
     }
     await sleep(i < plan.init_count ? 50 : 60);
   }
-  for (let i = 0; i < 20 && !got; i++) await sleep(50);
+  for (let i = 0; i < 20 && !done; i++) await sleep(50);
   reading = false;
   void reader;
-  return got;
+  return blob;
 }
 
-// Scan cmd_id candidates on this pipe; resolve true when the device re-enumerates.
-async function probeScan(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<boolean> {
+// Send one enable packet and wait up to waitMs for the device to re-enumerate.
+// Resolve true on disconnect (enable took), logging the cmd_id. An ACK/silence
+// just means "still here" — keep waiting until the deadline.
+async function probeSingle(
+  device: USBDevice,
+  pipe: Pipe,
+  pkt: Uint8Array<ArrayBuffer>,
+  waitMs: number,
+  log: (s: string) => void,
+): Promise<boolean> {
+  await sleep(200);
+  let disconnected = false;
+  const onDisc = (e: USBConnectionEvent) => {
+    if (e.device === device) disconnected = true;
+  };
+  navigator.usb.addEventListener("disconnect", onDisc);
+  const cid = pkt[10];
+  try {
+    try {
+      await device.transferOut(pipe.ep_out, pkt);
+    } catch {
+      disconnected = true; // write failed = device gone = success
+    }
+    const deadline = Date.now() + waitMs;
+    while (!disconnected && Date.now() < deadline) await sleep(100);
+  } finally {
+    navigator.usb.removeEventListener("disconnect", onDisc);
+  }
+  if (disconnected) log(`adb enabled by cmd_id 0x${cid.toString(16).padStart(2, "0")}`);
+  return disconnected;
+}
+
+// Fallback cmd_id scan (0x60–0x6F) for firmwares where the primary differs;
+// resolve true when the device re-enumerates, logging which candidate did it.
+async function probeScan(device: USBDevice, pipe: Pipe, plan: EnablePlan, log: (s: string) => void): Promise<boolean> {
   await sleep(200);
   let disconnected = false;
   const onDisc = (e: USBConnectionEvent) => {
@@ -245,14 +360,21 @@ async function probeScan(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promi
   navigator.usb.addEventListener("disconnect", onDisc);
   try {
     for (const cand of plan.candidates) {
-      if (disconnected) break;
+      // cmd_id is byte 10 of the framed packet. Attribute the disconnect to the
+      // candidate that caused it, so the real enable trigger is logged.
+      const cid = cand[10];
       try {
         await device.transferOut(pipe.ep_out, cand);
       } catch {
         disconnected = true; // write failed = device gone = success
+        log(`adb enabled by cmd_id 0x${cid.toString(16).padStart(2, "0")}`);
         break;
       }
       await sleep(200);
+      if (disconnected) {
+        log(`adb enabled by cmd_id 0x${cid.toString(16).padStart(2, "0")}`);
+        break;
+      }
     }
   } finally {
     navigator.usb.removeEventListener("disconnect", onDisc);

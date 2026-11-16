@@ -3,7 +3,9 @@
 //!
 //! Frame: 0x55 | len | ver/flags | crc8(hdr) | HOST dst seq ack cmd_set cmd_id payload | crc16
 //! Device: VID 0x2CA3 / PID 0x0020, bulk EP_OUT 0x04 / EP_IN 0x85.
-//! WMS target = 0x1B, cmd_set 0x07. ADB enable = cmd_id 0x65, payload [0x01].
+//! WMS target = 0x1B, cmd_set 0x07. ADB enable = cmd_id in 0x60–0x6F, payload
+//! [0x01]; empirically 0x64 on fw 01.00.1600 (0x65 does NOT trigger). The exact
+//! cmd_id is not statically isolable, so the runtime scans the range.
 
 pub const T8: [u8; 256] = [
     0x00, 0x5E, 0xBC, 0xE2, 0x61, 0x3F, 0xDD, 0x83, 0xC2, 0x9C, 0x7E, 0x20,
@@ -68,7 +70,6 @@ pub const T16: [u16; 256] = [
 pub const HOST: u8 = 0x2A;
 pub const WMS: u8 = 0x1B;
 pub const CMDSET_WMS: u8 = 0x07;
-pub const CMD_ADB_ENABLE: u8 = 0x65;
 
 /// CRC8 over `data`, seed 0x77 (DUML header check).
 pub fn crc8(data: &[u8]) -> u8 {
@@ -104,9 +105,10 @@ pub fn make_pkt(dst: u8, cmd_set: u8, cmd_id: u8, payload: &[u8], ack: u8, seq: 
     frame(&body)
 }
 
-/// The ADB-enable packet for a given sequence number.
+/// The ADB-enable packet for a given sequence number. Single source of truth
+/// for the command tuple (target/cmd_set/cmd_id/payload): `contract::CONFIRMED`.
 pub fn adb_enable_pkt(seq: u16) -> Vec<u8> {
-    make_pkt(WMS, CMDSET_WMS, CMD_ADB_ENABLE, &[0x01], 0x40, seq)
+    contract::build(&contract::CONFIRMED[0], seq)
 }
 
 fn hex(b: &[u8]) -> String {
@@ -125,6 +127,13 @@ pub struct DumlPort {
 pub struct EnablePlan {
     pub handshake: Vec<Vec<u8>>,
     pub init_count: usize,
+    /// The primary adb-enable packet: cmd_id 0x64 (from `contract::CONFIRMED`),
+    /// empirically confirmed to trigger the switch on fw 01.00.1600 via live
+    /// scan. Tried first (one packet, long wait); the scan below is the fallback.
+    pub enable: Vec<u8>,
+    /// WMS adb-enable candidates (cmd_set 0x07, cmd_id 0x60–0x6F). The fallback
+    /// scan for firmwares where the enable cmd_id differs from the primary — the
+    /// cmd_id is not statically isolable, so the winner is logged at runtime.
     pub candidates: Vec<Vec<u8>>,
     pub expect: Vec<u8>,
     /// DUML ports to try in order (firmware-dependent USB layout).
@@ -159,6 +168,7 @@ pub fn enable_plan() -> EnablePlan {
     EnablePlan {
         handshake,
         init_count: 4,
+        enable: adb_enable_pkt(0x2711),
         candidates,
         expect: b"</dji>".to_vec(),
         ports: vec![
@@ -178,9 +188,10 @@ pub fn enable_plan_json() -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "{{\"handshake\":[{}],\"init_count\":{},\"candidates\":[{}],\"expect\":\"{}\",\"ports\":[{}]}}",
+        "{{\"handshake\":[{}],\"init_count\":{},\"enable\":\"{}\",\"candidates\":[{}],\"expect\":\"{}\",\"ports\":[{}]}}",
         hex_arr(&p.handshake),
         p.init_count,
+        hex(&p.enable),
         hex_arr(&p.candidates),
         std::str::from_utf8(&p.expect).unwrap_or("</dji>"),
         ports_json,
@@ -198,7 +209,7 @@ pub fn adb_enable_packet(seq: u16) -> Vec<u8> {
     adb_enable_pkt(seq)
 }
 
-/// The full adb-enable plan (handshake + candidates) as JSON, for the browser.
+/// The full adb-enable plan (handshake + primary enable + candidates) as JSON.
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "enable_plan")]
 pub fn enable_plan_wasm() -> String {
@@ -265,9 +276,9 @@ mod tests {
     use super::*;
     #[test]
     fn adb_enable_matches_reference() {
-        // verified vector from reference/duml.py with seq=0x2711
+        // empirically verified enable command (cmd_id 0x64) at seq=0x2711
         let p = adb_enable_pkt(0x2711);
-        assert_eq!(hex(&p), "550e04662a1b112740076501ec84");
+        assert_eq!(hex(&p), "550e04662a1b112740076401349d");
     }
     fn hex(b: &[u8]) -> String { b.iter().map(|x| format!("{:02x}", x)).collect() }
 
@@ -289,13 +300,16 @@ mod tests {
         for pkt in &p.handshake {
             assert!(json.contains(&hex(pkt)), "missing handshake pkt in JSON");
         }
-        // JSON must contain every candidate as hex
+        // JSON must contain the primary enable packet and every candidate as hex
+        assert!(json.contains(&hex(&p.enable)), "missing enable pkt in JSON");
         for pkt in &p.candidates {
             assert!(json.contains(&hex(pkt)), "missing candidate pkt in JSON");
         }
         assert_eq!(p.handshake.len(), 28); // 4 init + 24 probe
         assert_eq!(p.candidates.len(), 16); // 0x60–0x6F
         assert_eq!(p.init_count, 4);
+        // primary enable is the empirically confirmed cmd_id 0x64
+        assert_eq!(hex(&p.enable), "550e04662a1b112740076401349d");
     }
 }
 
