@@ -142,6 +142,12 @@ impl Goggles {
             drain(&iface, pipe.ep_in);
             let blob = handshake(&iface, pipe, plan);
             if !blob.is_empty() { any_data = true; }
+            if std::env::var("TOOLYA_USB_DEBUG").is_ok() && !blob.is_empty() {
+                let n = blob.len().min(512);
+                let hx: String = blob[..n].iter().map(|b| format!("{b:02x}")).collect();
+                log(&format!("[usb] iface {} blob ({} B, first {}): {}", pipe.iface_num, blob.len(), n, hx));
+                log(&format!("[usb] iface {} reassembled: {}", pipe.iface_num, printable_ascii(&reassemble_duml(&blob)).trim()));
+            }
             if version.is_none() { version = parse_dji_version(&blob); }
             if contains_subslice(&blob, &plan.expect) {
                 log(&format!("handshake ok (iface {})", pipe.iface_num));
@@ -310,19 +316,56 @@ fn scan(iface: &nusb::Interface, pipe: &Pipe, plan: &EnablePlan, log: &impl Fn(&
     Err("no cmd_id triggered USB disconnect".into())
 }
 
-/// Best-effort device/version string from a DUML `</dji>` response, for
-/// diagnostics. Returns the printable ASCII run around the first `dji` marker.
+/// Clean device/version string from a DUML `</dji>` response, for diagnostics.
+/// The XML is fragmented across DUML frames (each prefixed by a 0x55 header), so
+/// the raw blob interleaves framing bytes into the text. Reassemble the frame
+/// payloads first, then pull the `id` + firmware attributes.
 fn parse_dji_version(blob: &[u8]) -> Option<String> {
-    let pos = blob.windows(3).position(|w| w.eq_ignore_ascii_case(b"dji"))?;
-    let start = blob[..pos].iter().rposition(|&b| b == b'<').map(|i| i + 1).unwrap_or(pos);
-    let s: String = blob[start..]
-        .iter()
-        .take(160)
-        .take_while(|&&b| b != 0)
-        .map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { ' ' })
-        .collect();
-    let s = s.split("</dji>").next().unwrap_or(&s).trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+    for src in [reassemble_duml(blob), blob.to_vec()] {
+        let text = printable_ascii(&src);
+        let dev = attr(&text, "id=\"");
+        let fw = attr(&text, "formal=\"").or_else(|| attr(&text, "version=\""));
+        if dev.is_some() || fw.is_some() {
+            return Some(match (dev, fw) {
+                (Some(d), Some(f)) => format!("{d} fw {f}"),
+                (Some(d), None) => d.to_string(),
+                (None, Some(f)) => format!("fw {f}"),
+                _ => unreachable!(),
+            });
+        }
+    }
+    None
+}
+
+/// Concatenate the payloads of the DUML frames in `blob`, dropping each frame's
+/// 0x55 header + CRC16. This strips the framing bytes that otherwise splice into
+/// a fragmented `</dji>` XML response.
+fn reassemble_duml(blob: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 4 <= blob.len() {
+        if blob[i] != 0x55 { i += 1; continue; }
+        let len = blob[i + 1] as usize | (((blob[i + 2] & 0x03) as usize) << 8);
+        if len < 6 || i + len > blob.len() { i += 1; continue; }
+        out.extend_from_slice(&blob[i + 4..i + len - 2]);
+        i += len;
+    }
+    out
+}
+
+/// Map a byte slice to a string, replacing non-printable bytes with a space.
+fn printable_ascii(b: &[u8]) -> String {
+    b.iter().map(|&c| if (0x20..0x7f).contains(&c) { c as char } else { ' ' }).collect()
+}
+
+/// Extract an XML attribute value: the text after `key` (e.g. `id="`) up to the
+/// next quote. Returns None if absent or empty.
+fn attr<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    let i = s.find(key)? + key.len();
+    let rest = &s[i..];
+    let end = rest.find('"')?;
+    let v = rest[..end].trim();
+    if v.is_empty() { None } else { Some(v) }
 }
 
 /// Outcome of a bulk IN: data, a deadline with nothing received, or a real USB

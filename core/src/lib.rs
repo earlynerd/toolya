@@ -171,9 +171,13 @@ pub fn enable_plan() -> EnablePlan {
         enable: adb_enable_pkt(0x2711),
         candidates,
         expect: b"</dji>".to_vec(),
+        // iface 4 (ep 0x04/0x85) is where real G3 units answer DUML (confirmed
+        // live on fw 01.00.1000 / build 38460) — try it first. iface 1 kept as a
+        // fallback for any build that exposes DUML on the CDC Data interface.
+        // The handshake validates by </dji> regardless, so order is just speed.
         ports: vec![
-            DumlPort { iface: 1, ep_out: 1, ep_in: 1 }, // build 38460+ (CDC Data)
-            DumlPort { iface: 4, ep_out: 4, ep_in: 5 }, // earlier builds
+            DumlPort { iface: 4, ep_out: 4, ep_in: 5 },
+            DumlPort { iface: 1, ep_out: 1, ep_in: 1 },
         ],
     }
 }

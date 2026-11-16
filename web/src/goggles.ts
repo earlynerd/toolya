@@ -127,6 +127,7 @@ export async function enableAdb(log: (s: string) => void): Promise<DeviceInfo> {
     log("handshake…");
     const blob = await probeHandshake(device, pipe, plan);
     if (blob.length) anyData = true;
+    debugDumpBlob(pipe.iface, blob);
     if (!version) version = parseDjiVersion(blob);
     if (blob.includes(plan.expect)) {
       log(`handshake ok (iface ${pipe.iface})`);
@@ -222,17 +223,61 @@ function dumlEpsFound(device: USBDevice, ports: DumlPort[]): boolean {
   return false;
 }
 
-// Best-effort device/version string from a DUML </dji> response, for diagnostics.
-function parseDjiVersion(blob: string): string | undefined {
-  const i = blob.toLowerCase().indexOf("dji");
+// Concatenate the DUML frame payloads in `blob` (a latin1 string, 1 char/byte),
+// dropping each frame's 0x55 header + CRC16, so the framing bytes that splice
+// into a fragmented </dji> XML response are removed. Non-printable → space.
+function reassembleDuml(blob: string): string {
+  let out = "";
+  let i = 0;
+  while (i + 4 <= blob.length) {
+    if (blob.charCodeAt(i) !== 0x55) { i++; continue; }
+    const len = blob.charCodeAt(i + 1) | ((blob.charCodeAt(i + 2) & 0x03) << 8);
+    if (len < 6 || i + len > blob.length) { i++; continue; }
+    for (let j = i + 4; j < i + len - 2; j++) {
+      const c = blob.charCodeAt(j);
+      out += c >= 0x20 && c < 0x7f ? blob[j] : " ";
+    }
+    i += len;
+  }
+  return out;
+}
+
+// Extract an XML attribute value: text after `key` (e.g. `id="`) up to the next
+// quote. Returns undefined if absent or empty.
+function attr(s: string, key: string): string | undefined {
+  const i = s.indexOf(key);
   if (i < 0) return undefined;
-  const lt = blob.lastIndexOf("<", i);
-  const start = lt >= 0 ? lt + 1 : i;
-  let s = blob.slice(start, start + 160);
-  const end = s.indexOf("</dji>");
-  if (end >= 0) s = s.slice(0, end);
-  s = s.replace(/[^\x20-\x7e]+/g, " ").trim();
-  return s || undefined;
+  const rest = s.slice(i + key.length);
+  const end = rest.indexOf('"');
+  if (end < 0) return undefined;
+  const v = rest.slice(0, end).trim();
+  return v || undefined;
+}
+
+// Dump the raw handshake blob (hex) + reassembled text to the console when
+// `localStorage.toolya_usb_debug` is set. Mirrors the CLI's TOOLYA_USB_DEBUG.
+function debugDumpBlob(iface: number, blob: string): void {
+  if (!blob.length) return;
+  let on = false;
+  try { on = !!localStorage.getItem("toolya_usb_debug"); } catch { /* ignore */ }
+  if (!on) return;
+  const n = Math.min(blob.length, 512);
+  let hex = "";
+  for (let i = 0; i < n; i++) hex += blob.charCodeAt(i).toString(16).padStart(2, "0");
+  console.debug(`[usb] iface ${iface} blob (${blob.length} B, first ${n}): ${hex}`);
+  console.debug(`[usb] iface ${iface} reassembled: ${reassembleDuml(blob).trim()}`);
+}
+
+// Clean device/version string from a DUML </dji> response, for diagnostics. The
+// XML is fragmented across DUML frames, so reassemble first, then pull the id +
+// firmware attributes. `blob` is a latin1 string (see probeHandshake).
+function parseDjiVersion(blob: string): string | undefined {
+  for (const src of [reassembleDuml(blob), blob]) {
+    const dev = attr(src, 'id="');
+    const fw = attr(src, 'formal="') ?? attr(src, 'version="');
+    if (dev || fw) return dev && fw ? `${dev} fw ${fw}` : dev ?? `fw ${fw}`;
+  }
+  return undefined;
 }
 
 type Pipe = { iface: number; ep_out: number; ep_in: number };
@@ -279,11 +324,11 @@ function resolvePipes(device: USBDevice, ports: DumlPort[]): Pipe[] {
   return pipes;
 }
 
-// Send the handshake on this pipe; resolve with every byte read back (decoded).
-// Stops early once </dji> appears. The caller checks for </dji> and can parse
-// the device version from the blob.
+// Send the handshake on this pipe; resolve with every byte read back as a latin1
+// string (1 char per byte, so charCodeAt recovers the raw bytes for DUML frame
+// reassembly). Stops early once </dji> appears.
 async function probeHandshake(device: USBDevice, pipe: Pipe, plan: EnablePlan): Promise<string> {
-  const dec = new TextDecoder();
+  const dec = new TextDecoder("latin1");
   let blob = "";
   let done = false;
   let reading = true;
