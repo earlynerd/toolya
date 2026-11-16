@@ -3,11 +3,16 @@
 import { Adb, AdbDaemonTransport } from "@yume-chan/adb";
 import {
   AdbDaemonWebUsbDeviceManager,
+  type AdbDaemonWebUsbDevice,
 } from "@yume-chan/adb-daemon-webusb";
 import AdbWebCredentialStore from "@yume-chan/adb-credential-web";
 import { ReadableStream } from "@yume-chan/stream-extra";
 
 import { getContract } from "./wasm";
+
+// DJI's official USB vendor id — used to scope the ADB device chooser/auto-pick
+// to the goggles (same VID in DUML and ADB modes).
+const DJI_VID = 0x2ca3;
 
 // Stock desk background on the goggles.
 export const BG_PATH = "/data/screendesk_1920.bmp";
@@ -59,11 +64,15 @@ export async function pushFile(adb: Adb, path: string, bytes: Uint8Array): Promi
 export async function connectAdb(): Promise<Adb> {
   const mgr = AdbDaemonWebUsbDeviceManager.BROWSER;
   if (!mgr) throw new Error("WebUSB not available in this browser");
+  // Restrict to DJI's vendor id (2CA3) so neither the auto-pick nor the chooser
+  // can land on some other Android/ADB device the user has plugged in. The lib
+  // merges the ADB interface class (0xff/0x42/0x01) into this filter itself.
+  const filters = [{ vendorId: DJI_VID }];
   // Prefer an already-granted device (no user gesture) so auto-connect right
   // after "ADB already enabled" works — the device was granted during enable.
   // Fall back to the picker (needs a click) when none is granted yet.
-  let device = (await mgr.getDevices())[0];
-  if (!device) device = await mgr.requestDevice();
+  let device: AdbDaemonWebUsbDevice | undefined = (await mgr.getDevices({ filters }))[0];
+  if (!device) device = await mgr.requestDevice({ filters });
   if (!device) throw new Error("no device selected");
   const connection = await device.connect();
   const credentialStore = new AdbWebCredentialStore("toolya");

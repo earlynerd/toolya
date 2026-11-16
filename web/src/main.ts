@@ -455,6 +455,9 @@ async function refreshNatartos() {
     $("nat-status").textContent = s.installed
       ? `${s.version}${s.running ? " · running" : " · stopped"}`
       : "not installed";
+    // Pulse the Install button while natartos isn't on the device yet, so the
+    // (easily-missed) primary step stands out. Cleared once installed.
+    $("nat-install").classList.toggle("cta", !s.installed);
     $("nat-boot").textContent = s.bootcount;
     ($("nat-safe") as HTMLInputElement).checked = s.disabled;
     const modsEl = $("nat-mods");

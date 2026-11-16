@@ -70,6 +70,12 @@ code{font-family:var(--mono)}
 .btn.danger:hover{background:color-mix(in srgb,var(--err) 24%,var(--panel2))}
 .btn.quiet{background:none;color:var(--muted)}
 .btn.quiet:hover{color:var(--fg)}
+/* Call-to-action pulse: draws the eye to the primary next step (Install) while
+   it is actionable. Toggled from JS; never animates while disabled or hovered. */
+@keyframes ctaPulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 60%,transparent)}70%,100%{box-shadow:0 0 0 6px color-mix(in srgb,var(--accent) 0%,transparent)}}
+.btn.cta:not(:disabled){animation:ctaPulse 1.8s ease-out infinite}
+.btn.cta:not(:disabled):hover{animation:none}
+@media (prefers-reduced-motion:reduce){.btn.cta{animation:none!important}}
 .btn.sm{height:30px;padding:0 11px;font-size:13px}
 .step{font:500 12px var(--mono);opacity:.7}
 .icon{display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:7px;background:none;color:var(--muted);cursor:pointer}
@@ -369,7 +375,7 @@ footer b{color:var(--fg);font-weight:600}
             <div class="row push">
               <button class="btn sm tonal" id="nat-refresh" type="button" disabled>refresh</button>
               <select class="field" id="nat-ver" aria-label="version" disabled><option>—</option></select>
-              <button class="btn tonal" id="nat-install" type="button" disabled>Install</button>
+              <button class="btn primary" id="nat-install" type="button" disabled>Install</button>
               <button class="btn tonal" id="nat-start" type="button" disabled>Start</button>
               <button class="btn danger" id="nat-uninstall" type="button" disabled hidden>Uninstall</button>
             </div>
