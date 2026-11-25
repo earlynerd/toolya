@@ -31,3 +31,4 @@ ROADMAP.md
 .dev.vars
 .cert/
 .idea/
+ondevice/persist/build/

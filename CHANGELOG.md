@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Added
+- **CLI + Web (experimental):** `persist` — persistent ADB+root and SELinux permissive
+  across reboots via a `/vendor` boot anchor (GPS HAL forward-first proxy + raw-syscall
+  boot helper), arm/kill flags, boot witness log, and a web kill switch. Not
+  bench-qualified; design and open questions in `docs/PERSIST.md`
 - **CLI + Web:** `input` — evdev key injection (BACK/OK/joystick) for manual control and UI autotests; key map in core, shared via the wasm contract
 - **Web:** 60 fps MJPEG live screen streaming (requires natartos display hook)
 - **Web:** natartos mod framework installer with version management and rollback

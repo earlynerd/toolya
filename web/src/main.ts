@@ -4,7 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { enableAdb, isKnownDevice } from "./goggles";
 import { stat, getSupportId, askDntRoot } from "./stat";
 import { fetchLatestRelease, loadManifest, installFromRelease, startMods, uninstallNatartos, setModEnabled, applyBackground, ensureDoomWad, noverity, downloadDoomWad, pushDoomWad, type Release, type Manifest, type CustomMod } from "./natartos";
-import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile } from "./adb";
+import { connectAdb, readUsage, run, runInDir, setUsbMode, usbCfgString, setSelinux, getSelinux, natartosStatus, natartosSafe, natartosDump, pushFile, pullFile, persistStatus, setPersistKilled } from "./adb";
 import { toScreenJpeg, previewInto, bgraToCanvas } from "./image";
 import { startStream, type StreamHandle } from "./stream";
 import { startPcStream, type PcStreamHandle } from "./pc-stream";
@@ -296,6 +296,8 @@ async function doConnect() {
     btn("selinux-enf", false);
     btn("nat-refresh", false);
     ($("nat-safe") as HTMLInputElement).disabled = false;
+    $("persist-status").textContent = "connect to read";
+    ($("persist-kill") as HTMLInputElement).disabled = true;
     updateNatInstall();
     setDpad(true);
     btn("scr-grab", false);
@@ -450,6 +452,7 @@ $("inp-back-long").addEventListener("click", () => void longKey("BACK", 1500));
 // --- natartos section ---
 async function refreshNatartos() {
   if (!adb) return;
+  void refreshPersist();
   try {
     const s = await natartosStatus(adb);
     $("nat-status").textContent = s.installed
@@ -515,6 +518,45 @@ async function toggleMod(file: string, on: boolean) {
   }
 }
 $("nat-refresh").addEventListener("click", () => void refreshNatartos());
+
+// --- boot persistence (fork feature, docs/PERSIST.md): status + kill switch ---
+async function refreshPersist() {
+  if (!adb || DRY) return;
+  try {
+    const s = await persistStatus(adb);
+    $("persist-status").textContent = s.installed
+      ? (s.killed ? "installed — OFF next boot (kill switch)" : s.armed ? "installed — armed" : "installed — disarmed")
+      : "not installed";
+    $("persist-enforce").textContent = s.enforce;
+    $("persist-usb").textContent = s.usb || "(empty)";
+    const w = $("persist-witness");
+    if (s.witness.length) {
+      w.hidden = false;
+      w.replaceChildren(...s.witness.map((l) => { const d = document.createElement("div"); d.textContent = l; return d; }));
+    } else {
+      w.hidden = s.installed;
+      w.textContent = s.installed ? "no boot has run the anchor yet" : "";
+    }
+    const k = $("persist-kill") as HTMLInputElement;
+    k.checked = s.killed;
+    k.disabled = !s.installed;
+    btn("persist-refresh", false);
+  } catch (e) {
+    log("persist status: " + friendlyError(e));
+  }
+}
+$("persist-refresh").addEventListener("click", () => void refreshPersist());
+$("persist-kill").addEventListener("change", async (e) => {
+  if (!adb) return;
+  const on = (e.target as HTMLInputElement).checked;
+  log(`boot persistence → ${on ? "OFF next boot (kill switch set)" : "ON next boot (kill switch cleared)"}`);
+  try {
+    await setPersistKilled(adb, on);
+    await refreshPersist();
+  } catch (err) {
+    reportAdbError("persist kill switch", err);
+  }
+});
 $("nat-uninstall").addEventListener("click", async () => {
   if (!adb) return;
   if (!confirm("Uninstall natartos? Restores the stock originals and removes all natartos files from /vendor. Reboot the goggles afterwards to return fully to stock.")) return;

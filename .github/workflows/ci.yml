@@ -9,8 +9,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: System deps (USB)
-        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev libudev-dev pkg-config
+      - name: System deps (USB + aarch64 cross)
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev libudev-dev pkg-config gcc-aarch64-linux-gnu
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -30,6 +30,13 @@ jobs:
         run: |
           cargo build --workspace --locked
           cargo test  --workspace --locked
+
+      - name: persist on-device — fixture tests + aarch64 build
+        run: |
+          cd ondevice/persist
+          make test
+          make clean
+          make
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked --version 0.13.1

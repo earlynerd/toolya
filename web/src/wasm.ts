@@ -24,6 +24,11 @@ export interface DeviceContract {
     schema: number; repo: string; stock_dir: string; manifest_device: string;
     bootcount: string; status: string; disabled: string; log: string;
   };
+  // Boot persistence (fork feature, docs/PERSIST.md): paths for status + kill switch.
+  persist: {
+    token: string; proxy: string; stock: string; helper: string; config: string;
+    enabled: string; disabled_flag: string; log: string;
+  };
   // evdev key map — single source of truth, shared with the CLI (core/src/input.rs).
   input: Record<string, { dev: string; type: number; code: number; confirmed: boolean }>;
 }

@@ -220,6 +220,8 @@ pub fn device_contract() -> String {
             "\"screen\":{{\"width\":{},\"height\":{},\"grab_trigger\":\"{}\",\"stream_port\":{}}},",
             "\"natartos\":{{\"schema\":{},\"repo\":\"{}\",\"stock_dir\":\"{}\",\"manifest_device\":\"{}\",",
             "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}},",
+            "\"persist\":{{\"token\":\"{}\",\"proxy\":\"{}\",\"stock\":\"{}\",\"helper\":\"{}\",\"config\":\"{}\",",
+            "\"enabled\":\"{}\",\"disabled_flag\":\"{}\",\"log\":\"{}\"}},",
             "\"input\":{}",
             "}}"
         ),
@@ -230,6 +232,8 @@ pub fn device_contract() -> String {
         screen::WIDTH, screen::HEIGHT, screen::GRAB_TRIGGER, screen::STREAM_PORT,
         natartos::MANIFEST_SCHEMA, natartos::REPO, natartos::STOCK_DIR, natartos::MANIFEST_DEVICE,
         natartos::BOOTCOUNT, natartos::STATUS, natartos::DISABLED, natartos::LOG,
+        persist::TOKEN, persist::GPS_PROXY, persist::GPS_STOCK, persist::HELPER, persist::CONFIG,
+        persist::ENABLED, persist::DISABLED, persist::LOG,
         crate::input::map_json(),
     )
 }
@@ -246,6 +250,8 @@ pub fn device_contract_json() -> String {
             "\"screen\":{{\"width\":{},\"height\":{},\"grab_trigger\":\"{}\",\"stream_port\":{}}},",
             "\"natartos\":{{\"schema\":{},\"repo\":\"{}\",\"stock_dir\":\"{}\",\"manifest_device\":\"{}\",",
             "\"bootcount\":\"{}\",\"status\":\"{}\",\"disabled\":\"{}\",\"log\":\"{}\"}},",
+            "\"persist\":{{\"token\":\"{}\",\"proxy\":\"{}\",\"stock\":\"{}\",\"helper\":\"{}\",\"config\":\"{}\",",
+            "\"enabled\":\"{}\",\"disabled_flag\":\"{}\",\"log\":\"{}\"}},",
             "\"input\":{}",
             "}}"
         ),
@@ -256,6 +262,8 @@ pub fn device_contract_json() -> String {
         screen::WIDTH, screen::HEIGHT, screen::GRAB_TRIGGER, screen::STREAM_PORT,
         natartos::MANIFEST_SCHEMA, natartos::REPO, natartos::STOCK_DIR, natartos::MANIFEST_DEVICE,
         natartos::BOOTCOUNT, natartos::STATUS, natartos::DISABLED, natartos::LOG,
+        persist::TOKEN, persist::GPS_PROXY, persist::GPS_STOCK, persist::HELPER, persist::CONFIG,
+        persist::ENABLED, persist::DISABLED, persist::LOG,
         crate::input::map_json(),
     )
 }
@@ -277,6 +285,8 @@ mod tests {
         assert!(json.starts_with('{') && json.ends_with('}'));
         assert!(json.contains("\"acm,adb\""));
         assert!(json.contains("\"0x17b6648\""));
+        assert!(json.contains("\"toolya-persist-v1\""));
+        assert!(json.contains("/vendor/lib64/gps.default.so"));
         assert!(json.contains("\"grom-labs/natartos\""));
         assert!(json.contains("\"stream_port\":7777"));
     }

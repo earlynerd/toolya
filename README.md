@@ -30,6 +30,9 @@ screen, the usage counters, and a handful of desk-development tweaks.
 - **Change the desk background** — drop in any photo, toolya converts it to the exact format.
 - Switch **USB mode** adb ↔ rndis; and (WIP) silence the fan, mute the boot sound,
   disable the transmitter for desk use.
+- **Boot persistence (experimental)** — `toolya persist` keeps ADB+root and SELinux
+  permissive across reboots via a file-only `/vendor` boot anchor with a kill switch.
+  Not bench-qualified yet; see [docs/PERSIST.md](docs/PERSIST.md).
 
 ## How it works
 

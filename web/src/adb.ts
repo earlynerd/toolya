@@ -128,6 +128,36 @@ export async function setSelinux(adb: Adb, mode: "permissive" | "enforcing"): Pr
   return (await run(adb, sh)).trim();
 }
 
+// Boot persistence (fork feature, docs/PERSIST.md) — status + kill switch only.
+// install/uninstall stay in the CLI (`toolya persist`), same policy as natartos
+// (persistent /vendor writes).
+export interface PersistStatus {
+  installed: boolean; // stock backup present → anchor slot is ours
+  armed: boolean;     // enabled flag with exact token
+  killed: boolean;    // disabled flag present (persist skipped at boot)
+  enforce: string;    // current SELinux state
+  usb: string;        // current sys.usb.config
+  witness: string[];  // last boot witness lines
+}
+export async function persistStatus(adb: Adb): Promise<PersistStatus> {
+  const p = (await getContract()).persist;
+  const yn = async (path: string) => (await run(adb, `[ -f ${path} ] && echo 1 || echo 0`)).trim() === "1";
+  const witness = (await run(adb, `tail -3 ${p.log} 2>/dev/null`)).split("\n").map((s) => s.trim()).filter(Boolean);
+  return {
+    installed: await yn(p.stock),
+    armed: await yn(p.enabled),
+    killed: await yn(p.disabled_flag),
+    enforce: (await run(adb, "getenforce 2>/dev/null || echo ?")).trim(),
+    usb: (await run(adb, "getprop sys.usb.config")).trim(),
+    witness,
+  };
+}
+/** Kill switch: on = a disabled-flag file makes the next boot pure stock. */
+export async function setPersistKilled(adb: Adb, on: boolean): Promise<void> {
+  const p = (await getContract()).persist;
+  await run(adb, on ? `touch ${p.disabled_flag}` : `rm -f ${p.disabled_flag}`);
+}
+
 // natartos (persistent mod framework) — read-only status + the low-risk kill-switch.
 // Install/uninstall stay in the CLI for now (persistent /vendor writes; brick-risk).
 export interface NatartosStatus {

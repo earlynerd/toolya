@@ -6,6 +6,7 @@ mod desk;
 mod info;
 mod input;
 mod natartos;
+mod persist;
 mod reboot;
 mod selinux;
 mod telemetry;
@@ -43,6 +44,7 @@ fn usage() {
     eprintln!("  selinux <status|permissive|enforcing> [--yes]  session SELinux toggle (devmem)");
     eprintln!("  input <key|down|up|raw>  send evdev events (BACK/OK/UP/DOWN/LEFT/RIGHT)");
     eprintln!("  natartos <sub>          mod framework (install/push/status/log/safe/...)");
+    eprintln!("  persist <sub>           EXPERIMENTAL persistent boot adb+permissive (docs/PERSIST.md)");
     eprintln!("  snap|stream|push|pull   on-device capture / transfer (needs natartos)");
     eprintln!("  desk                    show desk-mode step sequence");
     eprintln!("\nnot implemented yet:");
@@ -152,6 +154,7 @@ fn main() {
         "selinux" => selinux::run(&args[1..]),
         "input" => input::run(&args[1..]),
         "natartos" => natartos::run(&args[1..]),
+        "persist" => persist::run(&args[1..]),
         // These are implemented inside the natartos modloader; expose them at the
         // top level too (they need natartos installed on the goggles).
         "snap" | "stream" | "push" | "pull" => natartos::run(&args),
